@@ -237,6 +237,10 @@ const manifest = {
     "undo-stroke": {
       suggested_key: { default: "Alt+Z", mac: "Alt+Z" },
       description: "Undo last stroke"
+    },
+    "screen-mode": {
+      suggested_key: { default: "Alt+S", mac: "Alt+S" },
+      description: "Toggle Screen Annotation Mode"
     }
   },
   web_accessible_resources: [

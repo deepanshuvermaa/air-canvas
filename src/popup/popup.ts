@@ -20,7 +20,17 @@ const shapeSnapInput = document.getElementById('shape-snap') as HTMLInputElement
 const customColorInput = document.getElementById('custom-color') as HTMLInputElement;
 const colorSwatches = document.querySelectorAll('.color-swatch') as NodeListOf<HTMLDivElement>;
 
+const ghostRecordBtn = document.getElementById('ghost-record-btn') as HTMLButtonElement;
+const ghostRecordText = document.getElementById('ghost-record-text') as HTMLSpanElement;
+const ghostToggleBtn = document.getElementById('ghost-toggle-btn') as HTMLButtonElement;
+const ghostToggleText = document.getElementById('ghost-toggle-text') as HTMLSpanElement;
+const ghostStatusDot = document.getElementById('ghost-status-dot') as HTMLSpanElement;
+const ghostStatusTextEl = document.getElementById('ghost-status-text') as HTMLSpanElement;
+const ghostIntensityInput = document.getElementById('ghost-intensity') as HTMLInputElement;
+const ghostIntensityValue = document.getElementById('ghost-intensity-value') as HTMLSpanElement;
+
 let currentEnabled = false;
+let currentGhostState = 'idle';
 
 async function init(): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -34,11 +44,17 @@ async function init(): Promise<void> {
   }
 
   // Load settings
-  const stored = await chrome.storage.local.get(['airdraw_settings', 'airdraw_enabled']);
+  const stored = await chrome.storage.local.get(['airdraw_settings', 'airdraw_enabled', 'ghost_intensity']);
   if (stored.airdraw_settings) {
-    applySettingsToUI(stored.airdraw_settings);
+    applySettingsToUI(stored.airdraw_settings as Record<string, unknown>);
   }
-  updateStatus(stored.airdraw_enabled || false);
+  updateStatus(stored.airdraw_enabled as boolean || false);
+
+  // Load ghost intensity preference
+  if (stored.ghost_intensity !== undefined) {
+    ghostIntensityInput.value = String(stored.ghost_intensity);
+    ghostIntensityValue.textContent = stored.ghost_intensity + '%';
+  }
 }
 
 function applySettingsToUI(s: Record<string, unknown>): void {
@@ -147,6 +163,100 @@ fadeDurationInput.addEventListener('input', function () {
 
 shapeSnapInput.addEventListener('change', function () {
   saveAndSendSettings({ shapeSnap: shapeSnapInput.checked });
+});
+
+// ─── Ghost Mode controls ───
+
+function updateGhostUI(state: string): void {
+  currentGhostState = state;
+
+  switch (state) {
+    case 'recording':
+      ghostStatusDot.className = 'ghost-status-dot recording';
+      ghostStatusTextEl.textContent = 'Recording...';
+      ghostRecordBtn.disabled = true;
+      ghostRecordText.textContent = 'Recording...';
+      ghostToggleBtn.disabled = true;
+      break;
+    case 'ready':
+      ghostStatusDot.className = 'ghost-status-dot ready';
+      ghostStatusTextEl.textContent = 'Loop ready (5s)';
+      ghostRecordBtn.disabled = false;
+      ghostRecordText.textContent = 'Re-record';
+      ghostToggleBtn.disabled = false;
+      ghostToggleText.textContent = 'Activate Ghost';
+      ghostToggleBtn.classList.remove('active');
+      break;
+    case 'active':
+      ghostStatusDot.className = 'ghost-status-dot active';
+      ghostStatusTextEl.textContent = 'Ghost active';
+      ghostRecordBtn.disabled = true;
+      ghostRecordText.textContent = 'Record Loop';
+      ghostToggleBtn.disabled = false;
+      ghostToggleText.textContent = 'Go Live';
+      ghostToggleBtn.classList.add('active');
+      break;
+    default: // idle
+      ghostStatusDot.className = 'ghost-status-dot';
+      ghostStatusTextEl.textContent = 'No loop recorded';
+      ghostRecordBtn.disabled = false;
+      ghostRecordText.textContent = 'Record Loop';
+      ghostToggleBtn.disabled = true;
+      ghostToggleText.textContent = 'Activate Ghost';
+      ghostToggleBtn.classList.remove('active');
+      break;
+  }
+}
+
+ghostRecordBtn.addEventListener('click', async function () {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      await chrome.tabs.sendMessage(tab.id, { type: 'RECORD_GHOST' });
+      updateGhostUI('recording');
+    }
+  } catch (e) {
+    // Content script not loaded
+  }
+});
+
+ghostToggleBtn.addEventListener('click', async function () {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      await chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_GHOST' });
+      // Optimistic toggle
+      if (currentGhostState === 'ready') {
+        updateGhostUI('active');
+      } else if (currentGhostState === 'active') {
+        updateGhostUI('ready');
+      }
+    }
+  } catch (e) {
+    // Content script not loaded
+  }
+});
+
+ghostIntensityInput.addEventListener('input', async function () {
+  const val = Number(ghostIntensityInput.value);
+  ghostIntensityValue.textContent = val + '%';
+  // Send intensity to content script via settings update
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) {
+    chrome.tabs.sendMessage(tab.id, {
+      type: 'SETTINGS_UPDATE',
+      settings: { ghostIntensity: val }
+    }).catch(function () {});
+  }
+  // Persist
+  await chrome.storage.local.set({ ghost_intensity: val });
+});
+
+// Listen for ghost status updates from content script
+chrome.runtime.onMessage.addListener(function (message: any) {
+  if (message.type === 'GHOST_STATUS') {
+    updateGhostUI(message.ghostState);
+  }
 });
 
 async function saveAndSendSettings(partial: Record<string, unknown>): Promise<void> {

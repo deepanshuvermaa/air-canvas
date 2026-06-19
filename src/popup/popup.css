@@ -326,6 +326,121 @@ body {
   background: #fff;
 }
 
+/* ─── Ghost Mode ─── */
+
+.ghost-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ghost-icon {
+  color: #8B5CF6;
+}
+
+.ghost-desc {
+  margin-bottom: 10px;
+}
+
+.ghost-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  background: #16213e;
+  border-radius: 6px;
+}
+
+.ghost-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #444;
+  flex-shrink: 0;
+}
+
+.ghost-status-dot.recording {
+  background: #EF4444;
+  animation: airdraw-ghost-pulse 0.8s infinite;
+}
+
+.ghost-status-dot.ready {
+  background: #8B5CF6;
+}
+
+.ghost-status-dot.active {
+  background: #10B981;
+  animation: airdraw-ghost-pulse 1.5s infinite;
+}
+
+@keyframes airdraw-ghost-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.ghost-status-text {
+  font-size: 12px;
+  color: #aaa;
+}
+
+.ghost-buttons {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.ghost-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #2a2a3e;
+  border-radius: 8px;
+  background: transparent;
+  color: #aaa;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  background: #16213e;
+  color: #e0e0e0;
+  border-color: #444;
+}
+
+.ghost-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ghost-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.ghost-btn.record-btn:hover:not(:disabled) {
+  border-color: #EF4444;
+  color: #EF4444;
+}
+
+.ghost-btn.activate-btn:hover:not(:disabled) {
+  border-color: #8B5CF6;
+  color: #8B5CF6;
+}
+
+.ghost-btn.activate-btn.active {
+  background: linear-gradient(135deg, #8B5CF6, #6D28D9);
+  border-color: transparent;
+  color: #fff;
+}
+
+.ghost-btn.activate-btn.active:hover {
+  background: linear-gradient(135deg, #9D6FF8, #7C3AED);
+}
+
 /* ─── Shortcuts ─── */
 
 .shortcut-row {

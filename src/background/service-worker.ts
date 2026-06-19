@@ -2,8 +2,9 @@
  * Background Service Worker.
  * Handles keyboard shortcuts, badge state, message routing.
  */
+export {}; // Ensure this file is treated as an ES module by TypeScript
 
-const tabState = new Map<number, { enabled: boolean; tracking: boolean }>();
+const tabState = new Map<number, { enabled: boolean; tracking: boolean; ghostState?: string }>();
 
 chrome.commands.onCommand.addListener(async function (command: string) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -18,6 +19,15 @@ chrome.commands.onCommand.addListener(async function (command: string) {
       break;
     case 'undo-stroke':
       sendToTab(tab.id, { type: 'UNDO_STROKE' });
+      break;
+    case 'record-ghost':
+      sendToTab(tab.id, { type: 'RECORD_GHOST' });
+      break;
+    case 'toggle-ghost':
+      sendToTab(tab.id, { type: 'TOGGLE_GHOST' });
+      break;
+    case 'screen-mode':
+      sendToTab(tab.id, { type: 'SCREEN_MODE' });
       break;
   }
 });
@@ -35,6 +45,13 @@ chrome.runtime.onMessage.addListener(function (
       tracking: message.tracking || false,
     });
     updateBadge(tabId, message.enabled || false);
+  }
+
+  if (message.type === 'GHOST_STATUS' && tabId !== undefined) {
+    const existing = tabState.get(tabId) || { enabled: false, tracking: false };
+    existing.ghostState = message.ghostState;
+    tabState.set(tabId, existing);
+    updateGhostBadge(tabId, message.ghostState);
   }
 
   sendResponse({ received: true });
@@ -55,6 +72,23 @@ function updateBadge(tabId: number, enabled: boolean): void {
     chrome.action.setBadgeBackgroundColor({ color: '#FF3366', tabId: tabId });
   } else {
     chrome.action.setBadgeText({ text: '', tabId: tabId });
+  }
+}
+
+function updateGhostBadge(tabId: number, ghostState: string): void {
+  if (ghostState === 'active') {
+    chrome.action.setBadgeText({ text: 'GHO', tabId: tabId });
+    chrome.action.setBadgeBackgroundColor({ color: '#8B5CF6', tabId: tabId });
+  } else if (ghostState === 'recording') {
+    chrome.action.setBadgeText({ text: 'REC', tabId: tabId });
+    chrome.action.setBadgeBackgroundColor({ color: '#EF4444', tabId: tabId });
+  } else if (ghostState === 'ready') {
+    // Restore normal badge (AirDraw ON/OFF)
+    const state = tabState.get(tabId);
+    updateBadge(tabId, state?.enabled || false);
+  } else {
+    const state = tabState.get(tabId);
+    updateBadge(tabId, state?.enabled || false);
   }
 }
 

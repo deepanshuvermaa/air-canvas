@@ -10,7 +10,10 @@ export type AirDrawMessage =
   | UndoStrokeMessage
   | SettingsUpdateMessage
   | SettingsRequestMessage
-  | SettingsResponseMessage;
+  | SettingsResponseMessage
+  | RecordGhostMessage
+  | ToggleGhostMessage
+  | GhostStatusMessage;
 
 export interface ToggleMessage {
   type: 'TOGGLE_AIRDRAW';
@@ -46,6 +49,28 @@ export interface SettingsRequestMessage {
 export interface SettingsResponseMessage {
   type: 'SETTINGS_RESPONSE';
   settings: AirDrawSettings;
+}
+
+export interface RecordGhostMessage {
+  type: 'RECORD_GHOST';
+}
+
+export interface ToggleGhostMessage {
+  type: 'TOGGLE_GHOST';
+}
+
+export interface GhostStatusMessage {
+  type: 'GHOST_STATUS';
+  ghostState: GhostState;
+}
+
+// ─── Ghost Mode state machine ───
+
+export enum GhostState {
+  IDLE = 'IDLE',           // no loop recorded
+  RECORDING = 'RECORDING', // currently capturing loop clip
+  READY = 'READY',         // loop recorded, waiting for activation
+  ACTIVE = 'ACTIVE',       // ghost mode on, showing loop
 }
 
 // ─── Settings schema ───
@@ -110,6 +135,6 @@ export enum GestureState {
 
 export interface WorldBridgeEvent {
   source: 'airdraw-isolated' | 'airdraw-main';
-  type: 'TOGGLE' | 'STATUS' | 'SETTINGS' | 'CLEAR' | 'UNDO';
+  type: 'TOGGLE' | 'STATUS' | 'SETTINGS' | 'CLEAR' | 'UNDO' | 'RECORD_GHOST' | 'TOGGLE_GHOST' | 'GHOST_STATUS';
   payload?: unknown;
 }

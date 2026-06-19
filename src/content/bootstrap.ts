@@ -7,6 +7,7 @@
  * 4. Relays landmarks from service worker to MAIN world
  * 5. Shows/hides LIVE badge
  */
+export {}; // Ensure this file is treated as an ES module by TypeScript
 
 // ─── Step 1: Inject MAIN world script ───
 const scriptUrl = chrome.runtime.getURL('main-world.js');
@@ -108,6 +109,28 @@ function showBadge(show: boolean): void {
   }
 }
 
+// ─── Ghost Mode badge updates ───
+function updateGhostBadge(ghostState: string): void {
+  if (!statusBadge) return;
+
+  const dot = statusBadge.querySelector('#airdraw-status-dot') as HTMLElement | null;
+  const label = statusBadge.querySelector('span:last-child') as HTMLElement | null;
+
+  if (ghostState === 'active') {
+    statusBadge.classList.add('active');
+    if (dot) dot.style.background = '#8B5CF6';
+    if (label) label.textContent = 'Ghost ACTIVE';
+  } else if (ghostState === 'recording') {
+    statusBadge.classList.add('active');
+    if (dot) dot.style.background = '#EF4444';
+    if (label) label.textContent = 'Recording...';
+  } else {
+    // Restore to AirDraw state
+    if (dot) dot.style.background = '#FF3366';
+    if (label) label.textContent = 'AirDraw LIVE';
+  }
+}
+
 // ─── Message bridge: MAIN world <-> chrome.runtime ───
 function sendToMain(type: string, payload?: unknown): void {
   window.postMessage({ source: 'airdraw-isolated', type: type, payload: payload }, '*');
@@ -130,6 +153,16 @@ window.addEventListener('message', function (event) {
     }).catch(function () {});
   }
 
+  // Ghost mode status from MAIN world → relay to service worker for badge
+  if (msg.type === 'GHOST_STATUS') {
+    const payload = msg.payload;
+    updateGhostBadge(payload.ghostState);
+    chrome.runtime.sendMessage({
+      type: 'GHOST_STATUS',
+      ghostState: payload.ghostState,
+    }).catch(function () {});
+  }
+
 });
 
 // Messages FROM service worker (including landmarks from offscreen doc)
@@ -144,6 +177,10 @@ chrome.runtime.onMessage.addListener(function (
     case 'UNDO_STROKE': sendToMain('UNDO'); break;
     case 'STATUS_REQUEST': sendToMain('STATUS'); break;
     case 'SETTINGS_UPDATE': sendToMain('SETTINGS', message.settings); break;
+    case 'RECORD_GHOST': sendToMain('RECORD_GHOST'); break;
+    case 'TOGGLE_GHOST': sendToMain('TOGGLE_GHOST'); break;
+    case 'GHOST_STATUS_REQUEST': sendToMain('GHOST_STATUS'); break;
+    case 'SCREEN_MODE': sendToMain('SCREEN_MODE'); break;
   }
   sendResponse({ received: true });
   return true;

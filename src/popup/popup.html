@@ -141,6 +141,49 @@
     <!-- Divider -->
     <div class="divider"></div>
 
+    <!-- Ghost Mode -->
+    <div class="section">
+      <h3 class="section-title ghost-title">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" class="ghost-icon">
+          <path d="M8 1a5 5 0 0 0-5 5v4.5c0 .28.22.5.5.5s.5-.45.5-.75.45-.75 1-.75 1 .45 1 .75.22.75.5.75.5-.45.5-.75.45-.75 1-.75 1 .45 1 .75.22.75.5.75.5-.22.5-.5V6a5 5 0 0 0-5-5zm-1.5 6a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm5 0a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/>
+        </svg>
+        Ghost Mode
+      </h3>
+
+      <p class="setting-desc ghost-desc">Record a loop of yourself, then swap your live feed for it. Audio stays live.</p>
+
+      <div class="ghost-status-row">
+        <span class="ghost-status-dot" id="ghost-status-dot"></span>
+        <span class="ghost-status-text" id="ghost-status-text">No loop recorded</span>
+      </div>
+
+      <div class="ghost-buttons">
+        <button class="ghost-btn record-btn" id="ghost-record-btn" title="Record loop (Alt+R)">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
+            <circle cx="7" cy="7" r="5"/>
+          </svg>
+          <span id="ghost-record-text">Record Loop</span>
+        </button>
+        <button class="ghost-btn activate-btn" id="ghost-toggle-btn" title="Toggle Ghost (Alt+G)" disabled>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M7 1v12M1 7h12"/>
+          </svg>
+          <span id="ghost-toggle-text">Activate Ghost</span>
+        </button>
+      </div>
+
+      <div class="setting-row" id="ghost-intensity-row">
+        <label>Artifact Intensity</label>
+        <div class="slider-row">
+          <input type="range" id="ghost-intensity" min="0" max="100" value="50" step="5">
+          <span class="slider-value" id="ghost-intensity-value">50%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Divider -->
+    <div class="divider"></div>
+
     <!-- Shortcuts -->
     <div class="section">
       <h3 class="section-title">Shortcuts</h3>
@@ -155,6 +198,14 @@
       <div class="shortcut-row">
         <span>Undo</span>
         <kbd>Alt+Z</kbd>
+      </div>
+      <div class="shortcut-row">
+        <span>Record Ghost loop</span>
+        <kbd>Alt+R</kbd>
+      </div>
+      <div class="shortcut-row">
+        <span>Toggle Ghost</span>
+        <kbd>Alt+G</kbd>
       </div>
       <div class="shortcut-row">
         <span>Point to draw</span>
