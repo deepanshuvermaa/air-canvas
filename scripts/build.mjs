@@ -224,7 +224,7 @@ const manifest = {
       world: "ISOLATED"
     }
   ],
-  permissions: ["activeTab", "storage", "offscreen"],
+  permissions: ["activeTab", "storage"],
   commands: {
     "toggle-airdraw": {
       suggested_key: { default: "Alt+D", mac: "Alt+D" },

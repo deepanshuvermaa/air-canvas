@@ -15,6 +15,42 @@ scriptEl.src = scriptUrl;
 scriptEl.type = 'text/javascript';
 (document.head || document.documentElement).appendChild(scriptEl);
 
+// ─── Step 1b: Load MediaPipe vision bundle and create blob URL ───
+// Meet's CSP allows blob: URLs in script-src. We fetch the vision bundle
+// from extension files (no CSP restriction here in ISOLATED world),
+// create a blob URL, and pass it to the MAIN world which can import() it.
+(async function loadMediaPipeBundle() {
+  try {
+    const bundleUrl = chrome.runtime.getURL('mediapipe/vision_bundle.mjs');
+    const resp = await fetch(bundleUrl);
+    let bundleText = await resp.text();
+
+    // The vision bundle internally loads WASM files relative to its own URL.
+    // We need to rewrite those paths to point to our extension's WASM files.
+    // The bundle uses FilesetResolver which takes a basePath for WASM files.
+    // We'll pass the WASM path separately to the MAIN world.
+
+    const blobUrl = URL.createObjectURL(new Blob([bundleText], { type: 'application/javascript' }));
+    const wasmPath = chrome.runtime.getURL('mediapipe/wasm');
+    const modelPath = chrome.runtime.getURL('mediapipe/hand_landmarker.task');
+
+    // Send blob URL + paths to MAIN world
+    window.postMessage({
+      source: 'airdraw-isolated',
+      type: 'MEDIAPIPE_BUNDLE',
+      payload: {
+        blobUrl: blobUrl,
+        wasmPath: wasmPath,
+        modelPath: modelPath,
+      }
+    }, '*');
+
+    console.log('[AirDraw] MediaPipe bundle blob URL created and sent to MAIN world');
+  } catch (e) {
+    console.error('[AirDraw] Failed to load MediaPipe bundle:', e);
+  }
+})();
+
 // ─── Status badge ───
 let statusBadge: HTMLElement | null = null;
 
@@ -94,20 +130,6 @@ window.addEventListener('message', function (event) {
     }).catch(function () {});
   }
 
-  // MAIN world wants to start hand tracking → tell service worker
-  if (msg.type === 'START_TRACKING') {
-    const p = msg.payload;
-    chrome.runtime.sendMessage({
-      type: 'START_TRACKING',
-      width: p.width,
-      height: p.height,
-    }).catch(function () {});
-  }
-
-  // MAIN world wants to stop tracking
-  if (msg.type === 'STOP_TRACKING') {
-    chrome.runtime.sendMessage({ type: 'STOP_TRACKING' }).catch(function () {});
-  }
 });
 
 // Messages FROM service worker (including landmarks from offscreen doc)
@@ -122,10 +144,6 @@ chrome.runtime.onMessage.addListener(function (
     case 'UNDO_STROKE': sendToMain('UNDO'); break;
     case 'STATUS_REQUEST': sendToMain('STATUS'); break;
     case 'SETTINGS_UPDATE': sendToMain('SETTINGS', message.settings); break;
-    case 'LANDMARKS':
-      // Landmarks from offscreen doc via service worker → relay to MAIN world
-      sendToMain('LANDMARKS', { landmarks: message.landmarks });
-      break;
   }
   sendResponse({ received: true });
   return true;

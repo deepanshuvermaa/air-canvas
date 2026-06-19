@@ -318,29 +318,84 @@
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
   // ─── Hand tracking ───
-  // MediaPipe runs in the ISOLATED world (bootstrap.ts) because the page's
-  // CSP blocks loading scripts from cdn.jsdelivr.net. The ISOLATED world
-  // has the extension's CSP which allows it. Landmarks are relayed via
-  // postMessage from ISOLATED -> MAIN world.
+  // MediaPipe is loaded via blob URL (bypasses page CSP which allows blob:).
+  // The ISOLATED world fetches the bundle from extension files, creates a
+  // blob URL, and passes it here. We import() from the blob URL.
+
+  var mediapipeBlobUrl = null;
+  var mediapipeWasmPath = null;
+  var mediapipeModelPath = null;
+  var trackingFrameId = null;
 
   function startHandTrackingIfNeeded(width, height) {
     if (trackingActive) return;
+    if (!mediapipeBlobUrl) {
+      console.log('[AirDraw] Waiting for MediaPipe bundle blob URL...');
+      // Retry after a short delay
+      setTimeout(function() { startHandTrackingIfNeeded(width, height); }, 500);
+      return;
+    }
     trackingActive = true;
-    console.log('[AirDraw] Requesting hand tracking from ISOLATED world');
-    // Tell the isolated world to start tracking, passing video dimensions
-    window.postMessage({
-      source: 'airdraw-main',
-      type: 'START_TRACKING',
-      payload: { width: width, height: height }
-    }, '*');
+    console.log('[AirDraw] Loading MediaPipe via blob URL...');
+    initAndRunTracking(width, height);
+  }
+
+  async function initAndRunTracking(width, height) {
+    try {
+      var vision = await import(mediapipeBlobUrl);
+      var wasmFileset = await vision.FilesetResolver.forVisionTasks(mediapipeWasmPath);
+
+      handTracker = await vision.HandLandmarker.createFromOptions(wasmFileset, {
+        baseOptions: {
+          modelAssetPath: mediapipeModelPath,
+          delegate: 'GPU',
+        },
+        runningMode: 'VIDEO',
+        numHands: 1,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+
+      console.log('[AirDraw] HandLandmarker ready, starting tracking');
+      runTrackingLoop(width, height);
+    } catch (e) {
+      console.error('[AirDraw] MediaPipe init failed:', e);
+      trackingActive = false;
+    }
+  }
+
+  function runTrackingLoop(width, height) {
+    function process() {
+      if (!enabled || !trackingActive) {
+        trackingFrameId = null;
+        return;
+      }
+      trackingFrameId = requestAnimationFrame(process);
+
+      if (!handTracker || !videoElement || videoElement.readyState < 2) return;
+
+      try {
+        var result = handTracker.detectForVideo(videoElement, performance.now());
+        var landmarks = null;
+        if (result.landmarks && result.landmarks.length > 0) {
+          landmarks = result.landmarks[0];
+        }
+        var gesture = detectGesture(landmarks, width, height);
+        handleGesture(gesture);
+      } catch (e) {
+        // skip frame
+      }
+    }
+    trackingFrameId = requestAnimationFrame(process);
   }
 
   function stopTracking() {
     trackingActive = false;
-    window.postMessage({
-      source: 'airdraw-main',
-      type: 'STOP_TRACKING'
-    }, '*');
+    if (trackingFrameId) {
+      cancelAnimationFrame(trackingFrameId);
+      trackingFrameId = null;
+    }
     cursorPos = null;
     lastSmoothedPoint = null;
     gestureState = 'IDLE';
@@ -509,14 +564,13 @@
       case 'ENABLE_IF_SAVED':
         if (!enabled) enableAirDraw();
         break;
-      case 'LANDMARKS':
-        // Landmarks relayed from ISOLATED world (MediaPipe runs there)
-        if (enabled && event.data.payload) {
-          var lm = event.data.payload;
-          var w = compositeCanvas ? compositeCanvas.width : 640;
-          var h = compositeCanvas ? compositeCanvas.height : 480;
-          var gesture = detectGesture(lm.landmarks, w, h);
-          handleGesture(gesture);
+      case 'MEDIAPIPE_BUNDLE':
+        // Received blob URL for MediaPipe from ISOLATED world
+        if (event.data.payload) {
+          mediapipeBlobUrl = event.data.payload.blobUrl;
+          mediapipeWasmPath = event.data.payload.wasmPath;
+          mediapipeModelPath = event.data.payload.modelPath;
+          console.log('[AirDraw] MediaPipe bundle blob URL received');
         }
         break;
     }
