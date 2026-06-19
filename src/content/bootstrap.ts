@@ -1,11 +1,11 @@
 /**
  * Bootstrap content script — ISOLATED world, document_start.
  *
- * 1. Injects main-world.js synchronously (getUserMedia patch)
- * 2. Runs MediaPipe hand tracking in THIS world (extension CSP allows CDN)
- * 3. Relays landmarks to MAIN world via postMessage
- * 4. Shows/hides LIVE badge
- * 5. Bridges chrome.runtime <-> postMessage
+ * 1. Injects main-world.js (getUserMedia patch)
+ * 2. Bridges chrome.runtime <-> postMessage for all commands
+ * 3. Relays tracking start/stop to service worker (which runs offscreen doc)
+ * 4. Relays landmarks from service worker to MAIN world
+ * 5. Shows/hides LIVE badge
  */
 
 // ─── Step 1: Inject MAIN world script ───
@@ -14,119 +14,6 @@ const scriptEl = document.createElement('script');
 scriptEl.src = scriptUrl;
 scriptEl.type = 'text/javascript';
 (document.head || document.documentElement).appendChild(scriptEl);
-
-// ─── Hand tracking state ───
-let handTracker: any = null;
-let trackingVideo: HTMLVideoElement | null = null;
-let trackingLoop: number | null = null;
-let trackingWidth = 640;
-let trackingHeight = 480;
-
-async function initHandTracking(): Promise<void> {
-  if (handTracker) return;
-
-  console.log('[AirDraw] Loading MediaPipe in ISOLATED world...');
-
-  try {
-    // Dynamic import works here because ISOLATED world uses EXTENSION CSP
-    const vision = await import(
-      /* webpackIgnore: true */
-      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest'
-    );
-
-    const wasmFileset = await vision.FilesetResolver.forVisionTasks(
-      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
-    );
-
-    handTracker = await vision.HandLandmarker.createFromOptions(wasmFileset, {
-      baseOptions: {
-        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-        delegate: 'GPU',
-      },
-      runningMode: 'VIDEO',
-      numHands: 1,
-      minHandDetectionConfidence: 0.5,
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
-
-    console.log('[AirDraw] MediaPipe Hand Landmarker ready');
-  } catch (e) {
-    console.error('[AirDraw] MediaPipe init failed:', e);
-  }
-}
-
-async function startTracking(width: number, height: number): Promise<void> {
-  trackingWidth = width;
-  trackingHeight = height;
-
-  await initHandTracking();
-  if (!handTracker) return;
-
-  // Get our own camera stream for tracking (ISOLATED world has access)
-  if (!trackingVideo) {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: width }, height: { ideal: height } }
-      });
-      trackingVideo = document.createElement('video');
-      trackingVideo.srcObject = stream;
-      trackingVideo.autoplay = true;
-      trackingVideo.playsInline = true;
-      trackingVideo.muted = true;
-      trackingVideo.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
-      document.documentElement.appendChild(trackingVideo);
-      await trackingVideo.play();
-      console.log('[AirDraw] Tracking video ready');
-    } catch (e) {
-      console.error('[AirDraw] Cannot get camera for tracking:', e);
-      return;
-    }
-  }
-
-  if (trackingLoop !== null) return;
-
-  function process(): void {
-    trackingLoop = requestAnimationFrame(process);
-
-    if (!handTracker || !trackingVideo || trackingVideo.readyState < 2) return;
-
-    try {
-      const result = handTracker.detectForVideo(trackingVideo, performance.now());
-      let landmarks: any[] | null = null;
-      if (result.landmarks && result.landmarks.length > 0) {
-        landmarks = result.landmarks[0];
-      }
-
-      // Relay landmarks to MAIN world
-      window.postMessage({
-        source: 'airdraw-isolated',
-        type: 'LANDMARKS',
-        payload: { landmarks: landmarks }
-      }, '*');
-    } catch (_e) {
-      // skip frame
-    }
-  }
-
-  trackingLoop = requestAnimationFrame(process);
-  console.log('[AirDraw] Hand tracking loop started');
-}
-
-function stopTrackingLoop(): void {
-  if (trackingLoop !== null) {
-    cancelAnimationFrame(trackingLoop);
-    trackingLoop = null;
-  }
-  if (trackingVideo) {
-    const stream = trackingVideo.srcObject as MediaStream;
-    if (stream) {
-      stream.getTracks().forEach(function (t) { t.stop(); });
-    }
-    trackingVideo.remove();
-    trackingVideo = null;
-  }
-}
 
 // ─── Status badge ───
 let statusBadge: HTMLElement | null = null;
@@ -185,16 +72,19 @@ function showBadge(show: boolean): void {
   }
 }
 
-// ─── Message bridge ───
+// ─── Message bridge: MAIN world <-> chrome.runtime ───
 function sendToMain(type: string, payload?: unknown): void {
   window.postMessage({ source: 'airdraw-isolated', type: type, payload: payload }, '*');
 }
 
+// Messages FROM MAIN world
 window.addEventListener('message', function (event) {
   if (!event.data || event.data.source !== 'airdraw-main') return;
 
-  if (event.data.type === 'STATUS') {
-    const payload = event.data.payload;
+  const msg = event.data;
+
+  if (msg.type === 'STATUS') {
+    const payload = msg.payload;
     showBadge(payload.enabled);
     chrome.storage.local.set({ airdraw_enabled: payload.enabled });
     chrome.runtime.sendMessage({
@@ -204,18 +94,25 @@ window.addEventListener('message', function (event) {
     }).catch(function () {});
   }
 
-  if (event.data.type === 'START_TRACKING') {
-    const p = event.data.payload;
-    startTracking(p.width, p.height);
+  // MAIN world wants to start hand tracking → tell service worker
+  if (msg.type === 'START_TRACKING') {
+    const p = msg.payload;
+    chrome.runtime.sendMessage({
+      type: 'START_TRACKING',
+      width: p.width,
+      height: p.height,
+    }).catch(function () {});
   }
 
-  if (event.data.type === 'STOP_TRACKING') {
-    stopTrackingLoop();
+  // MAIN world wants to stop tracking
+  if (msg.type === 'STOP_TRACKING') {
+    chrome.runtime.sendMessage({ type: 'STOP_TRACKING' }).catch(function () {});
   }
 });
 
+// Messages FROM service worker (including landmarks from offscreen doc)
 chrome.runtime.onMessage.addListener(function (
-  message: { type: string; settings?: unknown },
+  message: any,
   _sender: chrome.runtime.MessageSender,
   sendResponse: (r?: unknown) => void
 ) {
@@ -225,6 +122,10 @@ chrome.runtime.onMessage.addListener(function (
     case 'UNDO_STROKE': sendToMain('UNDO'); break;
     case 'STATUS_REQUEST': sendToMain('STATUS'); break;
     case 'SETTINGS_UPDATE': sendToMain('SETTINGS', message.settings); break;
+    case 'LANDMARKS':
+      // Landmarks from offscreen doc via service worker → relay to MAIN world
+      sendToMain('LANDMARKS', { landmarks: message.landmarks });
+      break;
   }
   sendResponse({ received: true });
   return true;

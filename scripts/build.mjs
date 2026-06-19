@@ -32,6 +32,31 @@ fs.copyFileSync(
   path.join(DIST, 'popup.css')
 );
 
+// Copy tracker.html (offscreen document)
+fs.copyFileSync(
+  path.join('public', 'tracker.html'),
+  path.join(DIST, 'tracker.html')
+);
+
+// Copy MediaPipe files
+fs.mkdirSync(path.join(DIST, 'mediapipe', 'wasm'), { recursive: true });
+fs.copyFileSync(
+  path.join('public', 'mediapipe', 'vision_bundle.mjs'),
+  path.join(DIST, 'mediapipe', 'vision_bundle.mjs')
+);
+fs.copyFileSync(
+  path.join('public', 'mediapipe', 'hand_landmarker.task'),
+  path.join(DIST, 'mediapipe', 'hand_landmarker.task')
+);
+// Copy all wasm files
+const wasmDir = path.join('public', 'mediapipe', 'wasm');
+for (const f of fs.readdirSync(wasmDir)) {
+  fs.copyFileSync(
+    path.join(wasmDir, f),
+    path.join(DIST, 'mediapipe', 'wasm', f)
+  );
+}
+
 // Copy popup.html (rewrite script src to built output)
 const popupHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -175,6 +200,9 @@ const manifest = {
       "48": "icons/icon48.png"
     }
   },
+  content_security_policy: {
+    extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
   background: {
     service_worker: "service-worker.js",
     type: "module"
@@ -192,7 +220,7 @@ const manifest = {
       world: "ISOLATED"
     }
   ],
-  permissions: ["activeTab", "storage"],
+  permissions: ["activeTab", "storage", "offscreen"],
   commands: {
     "toggle-airdraw": {
       suggested_key: { default: "Alt+D", mac: "Alt+D" },
