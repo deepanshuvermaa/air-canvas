@@ -32,10 +32,14 @@ fs.copyFileSync(
   path.join(DIST, 'popup.css')
 );
 
-// Copy tracker.html (offscreen document)
+// Copy tracker files (offscreen document)
 fs.copyFileSync(
   path.join('public', 'tracker.html'),
   path.join(DIST, 'tracker.html')
+);
+fs.copyFileSync(
+  path.join('public', 'tracker.js'),
+  path.join(DIST, 'tracker.js')
 );
 
 // Copy MediaPipe files
