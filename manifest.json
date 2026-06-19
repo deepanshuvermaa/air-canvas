@@ -1,0 +1,92 @@
+{
+  "manifest_version": 3,
+  "name": "AirDraw — In-Air Whiteboard",
+  "version": "1.0.0",
+  "description": "Draw in the air during video calls. Your hand gestures become ink on your webcam feed, visible to everyone on the call.",
+  "icons": {
+    "16": "src/assets/icon16.png",
+    "48": "src/assets/icon48.png",
+    "128": "src/assets/icon128.png"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "src/assets/icon16.png",
+      "48": "src/assets/icon48.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://meet.google.com/*",
+        "https://*.zoom.us/*",
+        "https://teams.microsoft.com/*",
+        "https://teams.live.com/*"
+      ],
+      "js": ["src/content/injector.ts"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://meet.google.com/*",
+        "https://*.zoom.us/*",
+        "https://teams.microsoft.com/*",
+        "https://teams.live.com/*"
+      ],
+      "js": ["src/content/overlay.ts"],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    }
+  ],
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "commands": {
+    "toggle-airdraw": {
+      "suggested_key": {
+        "default": "Alt+D",
+        "mac": "Alt+D"
+      },
+      "description": "Toggle AirDraw on/off"
+    },
+    "clear-canvas": {
+      "suggested_key": {
+        "default": "Alt+C",
+        "mac": "Alt+C"
+      },
+      "description": "Clear the drawing canvas"
+    },
+    "undo-stroke": {
+      "suggested_key": {
+        "default": "Alt+Z",
+        "mac": "Alt+Z"
+      },
+      "description": "Undo last stroke"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/assets/*"
+      ],
+      "matches": [
+        "https://meet.google.com/*",
+        "https://*.zoom.us/*",
+        "https://teams.microsoft.com/*",
+        "https://teams.live.com/*"
+      ]
+    }
+  ],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "https://*.zoom.us/*",
+    "https://teams.microsoft.com/*",
+    "https://teams.live.com/*"
+  ]
+}

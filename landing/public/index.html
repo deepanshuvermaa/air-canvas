@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AirDraw — Draw in the Air During Video Calls</title>
+  <meta name="description" content="AirDraw is a Chrome extension that lets you draw in the air during video calls. Your hand gestures become ink on your webcam feed, visible to everyone.">
+  <meta property="og:title" content="AirDraw — In-Air Whiteboard for Video Calls">
+  <meta property="og:description" content="Point your finger at your webcam and draw. Your gestures become ink on your video feed, live on Google Meet, Zoom, and Teams.">
+  <meta property="og:type" content="website">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --pink: #FF3366;
+      --pink-glow: rgba(255, 51, 102, 0.3);
+      --dark: #0a0a1a;
+      --dark-card: #12122a;
+      --dark-border: #1e1e3a;
+      --text: #e0e0e0;
+      --text-dim: #888;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--dark);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ─── Hero ─── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 2rem;
+      position: relative;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 800px;
+      height: 800px;
+      background: radial-gradient(circle, var(--pink-glow) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .hero > * { position: relative; z-index: 1; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      background: rgba(255, 51, 102, 0.1);
+      border: 1px solid rgba(255, 51, 102, 0.3);
+      border-radius: 20px;
+      font-size: 13px;
+      color: var(--pink);
+      margin-bottom: 2rem;
+    }
+
+    .badge-dot {
+      width: 6px; height: 6px;
+      background: var(--pink);
+      border-radius: 50%;
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    h1 {
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      font-weight: 800;
+      line-height: 1.1;
+      margin-bottom: 1.5rem;
+      max-width: 700px;
+    }
+
+    h1 .gradient {
+      background: linear-gradient(135deg, #FF3366, #FF6B9D, #FF3366);
+      background-size: 200% auto;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: shimmer 3s linear infinite;
+    }
+
+    @keyframes shimmer {
+      0% { background-position: 0% center; }
+      100% { background-position: 200% center; }
+    }
+
+    .subtitle {
+      font-size: clamp(1rem, 2.5vw, 1.25rem);
+      color: var(--text-dim);
+      max-width: 550px;
+      line-height: 1.6;
+      margin-bottom: 2.5rem;
+    }
+
+    .cta-row {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 28px;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s ease;
+      cursor: pointer;
+      border: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #FF3366, #CC2952);
+      color: #fff;
+      box-shadow: 0 4px 20px var(--pink-glow);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px var(--pink-glow);
+    }
+
+    .btn-secondary {
+      background: var(--dark-card);
+      border: 1px solid var(--dark-border);
+      color: var(--text);
+    }
+
+    .btn-secondary:hover {
+      border-color: #444;
+      background: #1a1a3a;
+    }
+
+    /* ─── Demo area ─── */
+    .demo-container {
+      margin-top: 4rem;
+      width: 100%;
+      max-width: 720px;
+      aspect-ratio: 16/9;
+      background: var(--dark-card);
+      border: 1px solid var(--dark-border);
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .demo-placeholder {
+      color: var(--text-dim);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .demo-badge {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: rgba(0,0,0,0.7);
+      border: 1px solid rgba(255, 51, 102, 0.5);
+      border-radius: 16px;
+      font-size: 11px;
+    }
+
+    /* ─── Features ─── */
+    .features {
+      padding: 6rem 2rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .features h2 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 1rem;
+    }
+
+    .features .subtitle {
+      text-align: center;
+      margin: 0 auto 3rem;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+    }
+
+    .feature-card {
+      background: var(--dark-card);
+      border: 1px solid var(--dark-border);
+      border-radius: 16px;
+      padding: 28px;
+      transition: all 0.2s ease;
+    }
+
+    .feature-card:hover {
+      border-color: rgba(255, 51, 102, 0.3);
+      transform: translateY(-4px);
+    }
+
+    .feature-icon {
+      font-size: 2rem;
+      margin-bottom: 16px;
+    }
+
+    .feature-card h3 {
+      font-size: 1.1rem;
+      margin-bottom: 8px;
+    }
+
+    .feature-card p {
+      color: var(--text-dim);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* ─── How it works ─── */
+    .how-it-works {
+      padding: 6rem 2rem;
+      background: var(--dark-card);
+      border-top: 1px solid var(--dark-border);
+      border-bottom: 1px solid var(--dark-border);
+    }
+
+    .how-it-works h2 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 3rem;
+    }
+
+    .steps {
+      max-width: 700px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+    }
+
+    .step {
+      display: flex;
+      gap: 20px;
+      align-items: flex-start;
+    }
+
+    .step-number {
+      width: 40px;
+      height: 40px;
+      min-width: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 51, 102, 0.1);
+      border: 1px solid rgba(255, 51, 102, 0.3);
+      border-radius: 12px;
+      font-weight: 700;
+      color: var(--pink);
+    }
+
+    .step h3 {
+      font-size: 1rem;
+      margin-bottom: 4px;
+    }
+
+    .step p {
+      color: var(--text-dim);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ─── Tech section ─── */
+    .tech {
+      padding: 6rem 2rem;
+      max-width: 800px;
+      margin: 0 auto;
+      text-align: center;
+    }
+
+    .tech h2 {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+    }
+
+    .tech .subtitle {
+      margin: 0 auto 2rem;
+    }
+
+    .tech-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: center;
+    }
+
+    .pill {
+      padding: 8px 16px;
+      background: var(--dark-card);
+      border: 1px solid var(--dark-border);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
+
+    /* ─── Footer ─── */
+    footer {
+      padding: 3rem 2rem;
+      text-align: center;
+      border-top: 1px solid var(--dark-border);
+    }
+
+    footer p {
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+
+    footer a {
+      color: var(--pink);
+      text-decoration: none;
+    }
+
+    /* ─── Responsive ─── */
+    @media (max-width: 600px) {
+      .feature-grid {
+        grid-template-columns: 1fr;
+      }
+      .cta-row {
+        flex-direction: column;
+        align-items: center;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="badge">
+      <span class="badge-dot"></span>
+      Chrome Extension
+    </div>
+
+    <h1>Draw in the air.<br><span class="gradient">Everyone sees it.</span></h1>
+
+    <p class="subtitle">
+      AirDraw turns your hand gestures into ink on your webcam feed. Sketch diagrams,
+      circle key points, draw arrows — live on Google Meet, Zoom, and Teams.
+      No screen sharing. No extra apps. Just point and draw.
+    </p>
+
+    <div class="cta-row">
+      <a href="#install" class="btn btn-primary">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        Install Extension
+      </a>
+      <a href="#how-it-works" class="btn btn-secondary">
+        See how it works
+      </a>
+    </div>
+
+    <div class="demo-container">
+      <div class="demo-placeholder">
+        <p style="font-size: 3rem; margin-bottom: 12px;">&#9758;</p>
+        <p>Point your finger at the webcam to draw.<br>Everyone on the call sees it in real time.</p>
+      </div>
+      <div class="demo-badge">
+        <span class="badge-dot"></span>
+        AirDraw LIVE
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="features" id="features">
+    <h2>Everything you need to explain visually</h2>
+    <p class="subtitle">No setup, no context switching, no asking everyone to install something.</p>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon">&#9758;</div>
+        <h3>Gesture-Driven Drawing</h3>
+        <p>Point your index finger to draw. Make a fist or peace sign to stop. Open palm to erase. Natural, intuitive gestures — no clicks needed.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">&#128247;</div>
+        <h3>Lives on Your Video Feed</h3>
+        <p>Drawings appear directly on your webcam stream. Other participants see them in your video tile — no screen sharing required.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">&#9889;</div>
+        <h3>Real-Time, Zero Latency</h3>
+        <p>Hand tracking runs entirely in your browser using MediaPipe ML. No server round-trips. Your camera data never leaves your device.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">&#128308;</div>
+        <h3>Shape Snapping</h3>
+        <p>Draw a wobbly circle and it snaps into a perfect one. Same for lines, rectangles, and arrows. Professional diagrams from freehand gestures.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">&#128294;</div>
+        <h3>Laser Pointer Mode</h3>
+        <p>Toggle fade mode and your ink disappears after a few seconds — perfect for emphasizing points without cluttering the screen.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">&#127912;</div>
+        <h3>Customizable</h3>
+        <p>Choose your ink color, adjust stroke width, toggle shape snapping. Keyboard shortcuts for everything. Export drawings as PNG.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="how-it-works" id="how-it-works">
+    <h2>How it works</h2>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-number">1</div>
+        <div>
+          <h3>Install the Chrome extension</h3>
+          <p>One-click install from the Chrome Web Store. No accounts, no sign-up, no configuration.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-number">2</div>
+        <div>
+          <h3>Join your video call</h3>
+          <p>Works with Google Meet, Zoom Web, and Microsoft Teams Web. Just join your call as usual.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-number">3</div>
+        <div>
+          <h3>Press Alt+D to activate</h3>
+          <p>Or click the AirDraw icon in your toolbar. A small "LIVE" badge confirms it's active.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-number">4</div>
+        <div>
+          <h3>Point and draw</h3>
+          <p>Extend your index finger toward the webcam and move it. Your path becomes ink on your video feed, visible to everyone on the call in real time.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-number">5</div>
+        <div>
+          <h3>Stop, clear, continue</h3>
+          <p>Make a fist to stop drawing. Open your palm to clear. Press Alt+Z to undo. Press Alt+D again to deactivate entirely.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tech -->
+  <section class="tech" id="install">
+    <h2>Built with privacy in mind</h2>
+    <p class="subtitle">
+      Everything runs locally in your browser. No server, no cloud, no accounts.
+      Your camera data never leaves your device. Ever.
+    </p>
+
+    <div class="tech-pills">
+      <span class="pill">Chrome Manifest V3</span>
+      <span class="pill">TypeScript</span>
+      <span class="pill">MediaPipe Hand Tracking</span>
+      <span class="pill">Canvas API</span>
+      <span class="pill">WebRTC Streams</span>
+      <span class="pill">100% Client-Side ML</span>
+      <span class="pill">Zero Data Collection</span>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <p>AirDraw — Open source, privacy-first, zero-infrastructure.</p>
+  </footer>
+
+</body>
+</html>

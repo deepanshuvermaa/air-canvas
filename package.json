@@ -1,0 +1,29 @@
+{
+  "name": "air-canvas",
+  "version": "1.0.0",
+  "description": "AirDraw — In-Air Whiteboard for Video Calls",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "chrome-extension",
+    "hand-tracking",
+    "mediapipe",
+    "video-calls"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.33",
+    "@types/chrome": "^0.1.43",
+    "canvas": "^3.2.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.35"
+  }
+}
