@@ -241,7 +241,7 @@ const manifest = {
   },
   web_accessible_resources: [
     {
-      resources: ["main-world.js"],
+      resources: ["main-world.js", "mediapipe/*"],
       matches: [
         "https://meet.google.com/*",
         "https://*.zoom.us/*",
