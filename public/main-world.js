@@ -207,28 +207,53 @@
 
     drawingCtx.globalAlpha = 1;
 
-    // Cursor indicator
+    // Cursor indicator — distinct for each state
     if (cursorPos && enabled) {
-      // Outer ring
-      drawingCtx.beginPath();
-      var radius = isCursorDrawing ? settings.strokeWidth + 4 : 8;
-      drawingCtx.arc(cursorPos.x, cursorPos.y, radius, 0, 2 * Math.PI);
-      drawingCtx.strokeStyle = isCursorDrawing ? settings.strokeColor : 'rgba(255,255,255,0.8)';
-      drawingCtx.lineWidth = 2;
-      drawingCtx.stroke();
+      var gs = gestureState;
 
-      // Inner dot
-      drawingCtx.beginPath();
-      drawingCtx.arc(cursorPos.x, cursorPos.y, 3, 0, 2 * Math.PI);
-      drawingCtx.fillStyle = isCursorDrawing ? settings.strokeColor : 'rgba(255,255,255,0.9)';
-      drawingCtx.fill();
-
-      // "Drawing" indicator: filled ring when drawing
-      if (isCursorDrawing) {
+      if (gs === 'DRAWING') {
+        // Filled colored dot + ring = pen is down
         drawingCtx.beginPath();
-        drawingCtx.arc(cursorPos.x, cursorPos.y, radius + 3, 0, 2 * Math.PI);
-        drawingCtx.strokeStyle = 'rgba(255,255,255,0.4)';
+        drawingCtx.arc(cursorPos.x, cursorPos.y, settings.strokeWidth / 2 + 2, 0, 2 * Math.PI);
+        drawingCtx.fillStyle = settings.strokeColor;
+        drawingCtx.fill();
+        drawingCtx.beginPath();
+        drawingCtx.arc(cursorPos.x, cursorPos.y, settings.strokeWidth + 6, 0, 2 * Math.PI);
+        drawingCtx.strokeStyle = settings.strokeColor;
+        drawingCtx.lineWidth = 2;
+        drawingCtx.globalAlpha = 0.5;
+        drawingCtx.stroke();
+        drawingCtx.globalAlpha = 1;
+      } else if (gs === 'HOVERING') {
+        // Hollow white circle = pen is up, you can reposition
+        drawingCtx.beginPath();
+        drawingCtx.arc(cursorPos.x, cursorPos.y, 10, 0, 2 * Math.PI);
+        drawingCtx.strokeStyle = 'rgba(255,255,255,0.8)';
+        drawingCtx.lineWidth = 2;
+        drawingCtx.stroke();
+        // Small crosshair
+        drawingCtx.beginPath();
+        drawingCtx.moveTo(cursorPos.x - 4, cursorPos.y);
+        drawingCtx.lineTo(cursorPos.x + 4, cursorPos.y);
+        drawingCtx.moveTo(cursorPos.x, cursorPos.y - 4);
+        drawingCtx.lineTo(cursorPos.x, cursorPos.y + 4);
+        drawingCtx.strokeStyle = 'rgba(255,255,255,0.6)';
         drawingCtx.lineWidth = 1;
+        drawingCtx.stroke();
+      } else if (gs === 'ERASING') {
+        // Red X = eraser mode
+        drawingCtx.beginPath();
+        drawingCtx.arc(cursorPos.x, cursorPos.y, 20, 0, 2 * Math.PI);
+        drawingCtx.strokeStyle = 'rgba(255,80,80,0.7)';
+        drawingCtx.lineWidth = 2;
+        drawingCtx.stroke();
+        drawingCtx.beginPath();
+        drawingCtx.moveTo(cursorPos.x - 8, cursorPos.y - 8);
+        drawingCtx.lineTo(cursorPos.x + 8, cursorPos.y + 8);
+        drawingCtx.moveTo(cursorPos.x + 8, cursorPos.y - 8);
+        drawingCtx.lineTo(cursorPos.x - 8, cursorPos.y + 8);
+        drawingCtx.strokeStyle = 'rgba(255,80,80,0.9)';
+        drawingCtx.lineWidth = 2;
         drawingCtx.stroke();
       }
     }
@@ -430,13 +455,18 @@
     }
     lastSmoothedPoint = fingerTip;
 
-    // All 4 open = ERASING
+    // ─── Gesture classification ───
+    // ERASING:  all 4 fingers open (open palm wipe)
+    // DRAWING:  ONLY index finger open (point to draw)
+    // HOVERING: index + middle open (peace sign = pen up, reposition)
+    //           This is the KEY gesture for "lift pen, move, draw again"
+    // IDLE:     fist (no fingers) or 3 fingers open (ambiguous)
+
     if (openCount >= 4) return transitionGesture('ERASING', fingerTip);
-    // Index open (+ maybe one other) = DRAWING
-    if (indexOpen && openCount <= 2) return transitionGesture('DRAWING', fingerTip);
-    // Fist = IDLE
+    if (indexOpen && !middleOpen && openCount === 1) return transitionGesture('DRAWING', fingerTip);
+    if (indexOpen && middleOpen && openCount === 2) return transitionGesture('HOVERING', fingerTip);
     if (openCount === 0) return transitionGesture('IDLE', fingerTip);
-    // 3 fingers or other = HOVERING
+    // Anything else (3 fingers, odd combos) = HOVERING (safe default)
     return transitionGesture('HOVERING', fingerTip);
   }
 
@@ -445,16 +475,24 @@
       gestureFrameCount = 0;
     } else {
       gestureFrameCount++;
-      // Higher debounce = more stable, less flickering
-      // DRAWING->IDLE needs more frames (grace period to prevent
-      // accidental stroke breaks when finger wobbles)
-      var threshold = 2;
-      if (gestureState === 'DRAWING' && (candidate === 'IDLE' || candidate === 'HOVERING')) {
-        threshold = 8; // ~270ms grace before stopping a stroke
+
+      var threshold = 3; // default: 3 frames (~100ms)
+
+      // DRAWING -> anything else: grace period to avoid accidental breaks
+      if (gestureState === 'DRAWING' && candidate === 'HOVERING') {
+        threshold = 5; // ~170ms to lift pen (fast enough to feel responsive)
+      }
+      if (gestureState === 'DRAWING' && candidate === 'IDLE') {
+        threshold = 10; // ~330ms to fully stop (fist needs clear intent)
       }
       if (gestureState === 'DRAWING' && candidate === 'ERASING') {
-        threshold = 6; // need clear intent to erase
+        threshold = 8; // ~270ms to erase (prevent accidental wipe)
       }
+      // HOVERING -> DRAWING: moderate delay to prevent accidental draw
+      if (gestureState === 'HOVERING' && candidate === 'DRAWING') {
+        threshold = 3; // responsive but not instant
+      }
+
       if (gestureFrameCount >= threshold) {
         gestureState = candidate;
         gestureFrameCount = 0;
@@ -473,7 +511,8 @@
 
     if (state === 'DRAWING' && fingerTip) {
       if (previousGestureState !== 'DRAWING') {
-        // Begin new stroke
+        // Begin new stroke — this ONLY happens when transitioning
+        // from HOVERING/IDLE to DRAWING. Peace sign breaks the stroke.
         currentStroke = {
           id: uid(),
           points: [fingerTip],
@@ -483,20 +522,22 @@
           snappedShape: null
         };
       } else if (currentStroke) {
-        // Add point — skip if too close to last point (reduces noise)
+        // Continue current stroke — skip if too close (reduces jitter)
         var lastPt = currentStroke.points[currentStroke.points.length - 1];
         var d = dist(fingerTip, lastPt);
-        if (d > 2) { // minimum 2px movement to add a point
+        if (d > 2) {
           currentStroke.points.push(fingerTip);
         }
       }
-    } else if (previousGestureState === 'DRAWING' && currentStroke) {
-      // End stroke
+    }
+
+    // Pen lifted (DRAWING -> HOVERING or IDLE or ERASING)
+    if (previousGestureState === 'DRAWING' && state !== 'DRAWING' && currentStroke) {
+      // Finalize the stroke
       if (settings.shapeSnap && currentStroke.points.length >= 8) {
         var shape = detectShape(currentStroke);
         if (shape) currentStroke.snappedShape = shape;
       }
-      // Only save if stroke has meaningful length
       if (currentStroke.points.length >= 3) {
         strokes.push(currentStroke);
         undoStack = [];
@@ -504,9 +545,33 @@
       currentStroke = null;
     }
 
-    if (state === 'ERASING' && previousGestureState !== 'ERASING') {
-      undoStack = undoStack.concat(strokes);
-      strokes = [];
+    // Selective eraser: when in ERASING state, find and remove
+    // the nearest stroke to the finger position
+    if (state === 'ERASING' && fingerTip && previousGestureState !== 'ERASING') {
+      // Find strokes near the finger and remove them
+      var eraserRadius = 40;
+      var remaining = [];
+      for (var i = 0; i < strokes.length; i++) {
+        var strokeNear = false;
+        for (var j = 0; j < strokes[i].points.length; j++) {
+          if (dist(strokes[i].points[j], fingerTip) < eraserRadius) {
+            strokeNear = true;
+            break;
+          }
+        }
+        if (strokeNear) {
+          undoStack.push(strokes[i]);
+        } else {
+          remaining.push(strokes[i]);
+        }
+      }
+      if (remaining.length < strokes.length) {
+        strokes = remaining;
+      } else {
+        // No nearby stroke found — clear all (full palm wipe)
+        undoStack = undoStack.concat(strokes);
+        strokes = [];
+      }
       currentStroke = null;
     }
 
