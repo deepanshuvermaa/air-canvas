@@ -6,3 +6,4 @@ dist/
 Thumbs.db
 landing/node_modules/
 .claude/
+project.md
