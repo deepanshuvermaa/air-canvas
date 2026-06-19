@@ -27,19 +27,8 @@
         "https://teams.microsoft.com/*",
         "https://teams.live.com/*"
       ],
-      "js": ["src/content/injector.ts"],
+      "js": ["src/content/bootstrap.ts"],
       "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": [
-        "https://meet.google.com/*",
-        "https://*.zoom.us/*",
-        "https://teams.microsoft.com/*",
-        "https://teams.live.com/*"
-      ],
-      "js": ["src/content/overlay.ts"],
-      "run_at": "document_idle",
       "world": "ISOLATED"
     }
   ],
@@ -73,7 +62,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "src/assets/*"
+        "src/assets/*",
+        "main-world.js"
       ],
       "matches": [
         "https://meet.google.com/*",

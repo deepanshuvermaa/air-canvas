@@ -121,7 +121,7 @@ async function handlePopupToggle(): Promise<{ enabled: boolean }> {
 
   // Return cached state (will be updated by STATUS_RESPONSE from content script)
   const state = tabState.get(tab.id);
-  return { enabled: !state?.enabled ?? true };
+  return { enabled: !(state?.enabled) };
 }
 
 async function handlePopupStatusRequest(): Promise<{ enabled: boolean; tracking: boolean }> {
