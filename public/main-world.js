@@ -425,21 +425,31 @@
   }
 
   // ─── Gesture detection ───
-  function isFingerExtended(landmarks, tip, pip, mcp) {
-    var tipToPip = Math.sqrt(Math.pow(landmarks[tip].x - landmarks[pip].x, 2) + Math.pow(landmarks[tip].y - landmarks[pip].y, 2));
-    var mcpToPip = Math.sqrt(Math.pow(landmarks[mcp].x - landmarks[pip].x, 2) + Math.pow(landmarks[mcp].y - landmarks[pip].y, 2));
-    return tipToPip > mcpToPip * 0.8;
+  // Use a simple, robust approach: check if fingertip (tip) is further
+  // from the wrist than the PIP joint. This works regardless of hand angle.
+  function isFingerOpen(landmarks, tipIdx, pipIdx) {
+    var wrist = landmarks[0];
+    var tip = landmarks[tipIdx];
+    var pip = landmarks[pipIdx];
+    var tipDist = Math.sqrt(Math.pow(tip.x - wrist.x, 2) + Math.pow(tip.y - wrist.y, 2));
+    var pipDist = Math.sqrt(Math.pow(pip.x - wrist.x, 2) + Math.pow(pip.y - wrist.y, 2));
+    return tipDist > pipDist;
   }
+
+  var debugLogCounter = 0;
 
   function detectGesture(landmarks, width, height) {
     if (!landmarks || landmarks.length < 21) {
       return transitionGesture('IDLE', null);
     }
 
-    var indexExt = isFingerExtended(landmarks, 8, 6, 5);
-    var middleExt = isFingerExtended(landmarks, 12, 10, 9);
-    var ringExt = isFingerExtended(landmarks, 16, 14, 13);
-    var pinkyExt = isFingerExtended(landmarks, 20, 18, 17);
+    var indexOpen = isFingerOpen(landmarks, 8, 6);
+    var middleOpen = isFingerOpen(landmarks, 12, 10);
+    var ringOpen = isFingerOpen(landmarks, 16, 14);
+    var pinkyOpen = isFingerOpen(landmarks, 20, 18);
+
+    // Count how many fingers are open
+    var openCount = (indexOpen ? 1 : 0) + (middleOpen ? 1 : 0) + (ringOpen ? 1 : 0) + (pinkyOpen ? 1 : 0);
 
     // Mirrored x coordinate
     var rawX = (1 - landmarks[8].x) * width;
@@ -458,9 +468,28 @@
     }
     lastSmoothedPoint = fingerTip;
 
-    if (indexExt && middleExt && ringExt && pinkyExt) return transitionGesture('ERASING', fingerTip);
-    if (indexExt && !middleExt && !ringExt && !pinkyExt) return transitionGesture('DRAWING', fingerTip);
-    if (indexExt && middleExt && !ringExt && !pinkyExt) return transitionGesture('HOVERING', fingerTip);
+    // Debug logging every 60 frames (~2 sec)
+    debugLogCounter++;
+    if (debugLogCounter % 60 === 0) {
+      console.log('[AirDraw Gesture] index=' + indexOpen + ' middle=' + middleOpen +
+        ' ring=' + ringOpen + ' pinky=' + pinkyOpen + ' openCount=' + openCount +
+        ' state=' + gestureState);
+    }
+
+    // All 4 fingers open = ERASING (open palm)
+    if (openCount >= 4) return transitionGesture('ERASING', fingerTip);
+
+    // Index open (regardless of others) = DRAWING
+    // This is the key fix: don't require other fingers to be curled.
+    // Just having the index finger open is enough to draw.
+    if (indexOpen && openCount <= 2) return transitionGesture('DRAWING', fingerTip);
+
+    // 3 fingers open but not all 4 = still HOVERING
+    if (openCount === 3) return transitionGesture('HOVERING', fingerTip);
+
+    // No fingers open = fist = IDLE (stop drawing)
+    if (openCount === 0) return transitionGesture('IDLE', fingerTip);
+
     return transitionGesture('HOVERING', fingerTip);
   }
 
@@ -469,10 +498,13 @@
       gestureFrameCount = 0;
     } else {
       gestureFrameCount++;
-      if (gestureFrameCount >= settings.gestureDebounceFrames) {
+      // Reduced debounce: only need 2 consistent frames to transition
+      if (gestureFrameCount >= 2) {
+        var prev = gestureState;
         gestureState = candidate;
         gestureFrameCount = 0;
         if (candidate === 'IDLE') lastSmoothedPoint = null;
+        console.log('[AirDraw Gesture] ' + prev + ' -> ' + candidate);
       }
     }
     return { state: gestureState, fingerTip: fingerTip };
