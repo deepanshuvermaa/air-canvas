@@ -48,6 +48,24 @@
     smoothingAlpha: 0.4,
   };
 
+  // ─── Create Trusted Types policy for MediaPipe ───
+  // Google Meet enforces Trusted Types. MediaPipe internally sets script.src
+  // for WASM loading, which requires a TrustedScriptURL. We create a policy
+  // that allows our extension's URLs through.
+  if (typeof window.trustedTypes !== 'undefined' && window.trustedTypes.createPolicy) {
+    try {
+      window.trustedTypes.createPolicy('default', {
+        createScriptURL: function(url) { return url; },
+        createHTML: function(html) { return html; },
+        createScript: function(script) { return script; },
+      });
+      console.log('[AirDraw] Trusted Types default policy created');
+    } catch (e) {
+      // Policy may already exist — that's fine
+      console.log('[AirDraw] Trusted Types policy already exists or not needed');
+    }
+  }
+
   // ─── Patch getUserMedia IMMEDIATELY ───
   var originalGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
 
