@@ -2,7 +2,7 @@ import { FilesetResolver, HandLandmarker } from './mediapipe/vision_bundle.mjs';
 
 let handTracker = null;
 let videoElement = null;
-let trackingLoop = null;
+let trackingInterval = null;
 
 async function initTracker() {
   console.log('[AirDraw Tracker] Initializing MediaPipe...');
@@ -27,34 +27,46 @@ async function initTracker() {
 }
 
 async function startTracking(width, height) {
-  if (!handTracker) await initTracker();
-
-  if (!videoElement) {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: width }, height: { ideal: height } }
-    });
-    videoElement = document.createElement('video');
-    videoElement.srcObject = stream;
-    videoElement.autoplay = true;
-    videoElement.playsInline = true;
-    videoElement.muted = true;
-    document.body.appendChild(videoElement);
-    await videoElement.play();
-    console.log('[AirDraw Tracker] Camera stream acquired');
+  try {
+    if (!handTracker) await initTracker();
+  } catch (e) {
+    console.error('[AirDraw Tracker] Init failed:', e);
+    return;
   }
 
-  if (trackingLoop) return;
+  if (!videoElement) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: width }, height: { ideal: height } }
+      });
+      videoElement = document.createElement('video');
+      videoElement.srcObject = stream;
+      videoElement.autoplay = true;
+      videoElement.playsInline = true;
+      videoElement.muted = true;
+      document.body.appendChild(videoElement);
+      await videoElement.play();
+      console.log('[AirDraw Tracker] Camera stream acquired');
+    } catch (e) {
+      console.error('[AirDraw Tracker] Camera access failed:', e);
+      return;
+    }
+  }
 
-  function process() {
-    trackingLoop = requestAnimationFrame(process);
+  if (trackingInterval) return;
 
+  // IMPORTANT: Use setInterval, NOT requestAnimationFrame.
+  // Offscreen documents have no visible window, so rAF never fires.
+  trackingInterval = setInterval(function () {
     if (!handTracker || !videoElement || videoElement.readyState < 2) return;
 
     try {
-      const result = handTracker.detectForVideo(videoElement, performance.now());
-      let landmarks = null;
+      var result = handTracker.detectForVideo(videoElement, performance.now());
+      var landmarks = null;
       if (result.landmarks && result.landmarks.length > 0) {
-        landmarks = result.landmarks[0].map(function(l) { return { x: l.x, y: l.y, z: l.z }; });
+        landmarks = result.landmarks[0].map(function (l) {
+          return { x: l.x, y: l.y, z: l.z };
+        });
       }
 
       chrome.runtime.sendMessage({
@@ -64,28 +76,28 @@ async function startTracking(width, height) {
     } catch (e) {
       // skip frame
     }
-  }
+  }, 33); // ~30fps
 
-  trackingLoop = requestAnimationFrame(process);
-  console.log('[AirDraw Tracker] Tracking loop started');
+  console.log('[AirDraw Tracker] Tracking loop started (setInterval 33ms)');
 }
 
 function stopTracking() {
-  if (trackingLoop) {
-    cancelAnimationFrame(trackingLoop);
-    trackingLoop = null;
+  if (trackingInterval) {
+    clearInterval(trackingInterval);
+    trackingInterval = null;
   }
   if (videoElement) {
-    const stream = videoElement.srcObject;
-    if (stream) stream.getTracks().forEach(function(t) { t.stop(); });
+    var stream = videoElement.srcObject;
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
     videoElement.remove();
     videoElement = null;
   }
   console.log('[AirDraw Tracker] Tracking stopped');
 }
 
-chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
   if (message.type === 'START_TRACKING') {
+    console.log('[AirDraw Tracker] Received START_TRACKING', message.width, message.height);
     startTracking(message.width || 640, message.height || 480);
     sendResponse({ ok: true });
   } else if (message.type === 'STOP_TRACKING') {
