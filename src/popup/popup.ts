@@ -1,13 +1,6 @@
 /**
- * Popup script — runs when the user clicks the toolbar icon.
- *
- * Communicates with the service worker via chrome.runtime.sendMessage.
- * Reads/writes settings via the service worker (which uses chrome.storage.local).
+ * Popup script — self-contained, no cross-entry imports.
  */
-
-import type { AirDrawMessage, AirDrawSettings } from '../types/messages';
-
-// ─── DOM elements ───
 
 const toggleBtn = document.getElementById('toggle-btn') as HTMLButtonElement;
 const toggleText = document.getElementById('toggle-text') as HTMLSpanElement;
@@ -29,10 +22,7 @@ const colorSwatches = document.querySelectorAll('.color-swatch') as NodeListOf<H
 
 let currentEnabled = false;
 
-// ─── Initialize ───
-
 async function init(): Promise<void> {
-  // Check if we're on a supported page
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const url = tab?.url || '';
   const isSupported = /meet\.google\.com|zoom\.us|teams\.microsoft\.com|teams\.live\.com/.test(url);
@@ -44,35 +34,35 @@ async function init(): Promise<void> {
   }
 
   // Load settings
-  const response = await sendMessage({ type: 'SETTINGS_REQUEST' }) as { settings?: AirDrawSettings };
-  if (response?.settings) {
-    applySettingsToUI(response.settings);
+  const stored = await chrome.storage.local.get(['airdraw_settings', 'airdraw_enabled']);
+  if (stored.airdraw_settings) {
+    applySettingsToUI(stored.airdraw_settings);
   }
-
-  // Get current status
-  const statusResponse = await sendMessage({ type: 'STATUS_REQUEST' }) as { enabled?: boolean; tracking?: boolean };
-  if (statusResponse) {
-    updateStatus(statusResponse.enabled ?? false);
-  }
+  updateStatus(stored.airdraw_enabled || false);
 }
 
-function applySettingsToUI(settings: AirDrawSettings): void {
-  strokeWidthInput.value = String(settings.strokeWidth);
-  strokeWidthValue.textContent = `${settings.strokeWidth}px`;
-
-  fadeModeInput.checked = settings.fadeMode;
-  fadeDurationRow.style.display = settings.fadeMode ? 'block' : 'none';
-  fadeDurationInput.value = String(settings.fadeDuration);
-  fadeDurationValue.textContent = `${(settings.fadeDuration / 1000).toFixed(1)}s`;
-
-  shapeSnapInput.checked = settings.shapeSnap;
-
-  customColorInput.value = settings.strokeColor;
-
-  // Update active swatch
-  colorSwatches.forEach((swatch) => {
-    swatch.classList.toggle('active', swatch.dataset.color === settings.strokeColor);
-  });
+function applySettingsToUI(s: Record<string, unknown>): void {
+  if (s.strokeWidth) {
+    strokeWidthInput.value = String(s.strokeWidth);
+    strokeWidthValue.textContent = s.strokeWidth + 'px';
+  }
+  if (typeof s.fadeMode === 'boolean') {
+    fadeModeInput.checked = s.fadeMode;
+    fadeDurationRow.style.display = s.fadeMode ? 'block' : 'none';
+  }
+  if (s.fadeDuration) {
+    fadeDurationInput.value = String(s.fadeDuration);
+    fadeDurationValue.textContent = (Number(s.fadeDuration) / 1000).toFixed(1) + 's';
+  }
+  if (typeof s.shapeSnap === 'boolean') {
+    shapeSnapInput.checked = s.shapeSnap;
+  }
+  if (s.strokeColor) {
+    customColorInput.value = String(s.strokeColor);
+    colorSwatches.forEach(function (sw) {
+      sw.classList.toggle('active', sw.dataset.color === s.strokeColor);
+    });
+  }
 }
 
 function updateStatus(enabled: boolean): void {
@@ -90,88 +80,87 @@ function updateStatus(enabled: boolean): void {
   }
 }
 
-// ─── Event listeners ───
-
-toggleBtn.addEventListener('click', async () => {
-  const response = await sendMessage({ type: 'TOGGLE_AIRDRAW' }) as { enabled?: boolean };
-  updateStatus(response?.enabled ?? !currentEnabled);
+toggleBtn.addEventListener('click', async function () {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      await chrome.tabs.sendMessage(tab.id, { type: 'TOGGLE_AIRDRAW' });
+    }
+  } catch (e) {
+    // Content script not loaded
+  }
+  // Optimistically toggle UI
+  updateStatus(!currentEnabled);
 });
 
-clearBtn.addEventListener('click', () => {
-  sendMessage({ type: 'CLEAR_CANVAS' });
+clearBtn.addEventListener('click', async function () {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'CLEAR_CANVAS' }).catch(function () {});
 });
 
-undoBtn.addEventListener('click', () => {
-  sendMessage({ type: 'UNDO_STROKE' });
+undoBtn.addEventListener('click', async function () {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'UNDO_STROKE' }).catch(function () {});
 });
 
-redoBtn.addEventListener('click', () => {
-  // Redo is handled by sending undo with a special flag
-  // For now, we just send it as a message that the content script handles
-  sendMessage({ type: 'UNDO_STROKE' }); // TODO: separate redo message
+redoBtn.addEventListener('click', async function () {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: 'REDO_STROKE' }).catch(function () {});
 });
 
-exportBtn.addEventListener('click', async () => {
-  // Request export from content script (downloads a PNG)
-  // For now, show a brief confirmation
+exportBtn.addEventListener('click', function () {
   exportBtn.textContent = 'Saved!';
-  setTimeout(() => {
-    exportBtn.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
-        <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
-      </svg>
-      Export
-    `;
-  }, 1500);
+  setTimeout(function () { exportBtn.textContent = 'Export'; }, 1500);
 });
 
-// Color swatches
-colorSwatches.forEach((swatch) => {
-  swatch.addEventListener('click', () => {
+colorSwatches.forEach(function (swatch) {
+  swatch.addEventListener('click', function () {
     const color = swatch.dataset.color!;
-    colorSwatches.forEach((s) => s.classList.remove('active'));
+    colorSwatches.forEach(function (s) { s.classList.remove('active'); });
     swatch.classList.add('active');
     customColorInput.value = color;
-    sendSettingsUpdate({ strokeColor: color });
+    saveAndSendSettings({ strokeColor: color });
   });
 });
 
-customColorInput.addEventListener('input', () => {
-  colorSwatches.forEach((s) => s.classList.remove('active'));
-  sendSettingsUpdate({ strokeColor: customColorInput.value });
+customColorInput.addEventListener('input', function () {
+  colorSwatches.forEach(function (s) { s.classList.remove('active'); });
+  saveAndSendSettings({ strokeColor: customColorInput.value });
 });
 
-strokeWidthInput.addEventListener('input', () => {
+strokeWidthInput.addEventListener('input', function () {
   const val = Number(strokeWidthInput.value);
-  strokeWidthValue.textContent = `${val}px`;
-  sendSettingsUpdate({ strokeWidth: val });
+  strokeWidthValue.textContent = val + 'px';
+  saveAndSendSettings({ strokeWidth: val });
 });
 
-fadeModeInput.addEventListener('change', () => {
+fadeModeInput.addEventListener('change', function () {
   fadeDurationRow.style.display = fadeModeInput.checked ? 'block' : 'none';
-  sendSettingsUpdate({ fadeMode: fadeModeInput.checked });
+  saveAndSendSettings({ fadeMode: fadeModeInput.checked });
 });
 
-fadeDurationInput.addEventListener('input', () => {
+fadeDurationInput.addEventListener('input', function () {
   const val = Number(fadeDurationInput.value);
-  fadeDurationValue.textContent = `${(val / 1000).toFixed(1)}s`;
-  sendSettingsUpdate({ fadeDuration: val });
+  fadeDurationValue.textContent = (val / 1000).toFixed(1) + 's';
+  saveAndSendSettings({ fadeDuration: val });
 });
 
-shapeSnapInput.addEventListener('change', () => {
-  sendSettingsUpdate({ shapeSnap: shapeSnapInput.checked });
+shapeSnapInput.addEventListener('change', function () {
+  saveAndSendSettings({ shapeSnap: shapeSnapInput.checked });
 });
 
-// ─── Helpers ───
+async function saveAndSendSettings(partial: Record<string, unknown>): Promise<void> {
+  // Merge with existing
+  const stored = await chrome.storage.local.get('airdraw_settings');
+  const current = stored.airdraw_settings || {};
+  const updated = { ...current, ...partial };
+  await chrome.storage.local.set({ airdraw_settings: updated });
 
-function sendSettingsUpdate(partial: Partial<AirDrawSettings>): void {
-  sendMessage({ type: 'SETTINGS_UPDATE', settings: partial });
+  // Send to content script
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) {
+    chrome.tabs.sendMessage(tab.id, { type: 'SETTINGS_UPDATE', settings: partial }).catch(function () {});
+  }
 }
 
-function sendMessage(message: AirDrawMessage): Promise<unknown> {
-  return chrome.runtime.sendMessage(message);
-}
-
-// ─── Boot ───
 init();

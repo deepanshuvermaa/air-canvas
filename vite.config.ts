@@ -1,25 +1,26 @@
 import { defineConfig } from 'vite';
-import { crx } from '@crxjs/vite-plugin';
-import manifest from './manifest.json';
+import { resolve } from 'path';
 
 export default defineConfig({
-  plugins: [
-    crx({ manifest }),
-  ],
   build: {
     target: 'es2020',
-    sourcemap: true,
+    outDir: 'dist',
+    emptyOutDir: true,
+    sourcemap: false,
     rollupOptions: {
       input: {
-        popup: 'src/popup/popup.html',
+        'service-worker': resolve(__dirname, 'src/background/service-worker.ts'),
+        'bootstrap': resolve(__dirname, 'src/content/bootstrap.ts'),
+        'popup': resolve(__dirname, 'src/popup/popup.ts'),
       },
-    },
-  },
-  server: {
-    port: 5173,
-    strictPort: true,
-    hmr: {
-      clientPort: 5173,
+      output: {
+        entryFileNames: '[name].js',
+        chunkFileNames: '[name].js',
+        assetFileNames: '[name].[ext]',
+        // Each entry must be self-contained (no shared chunks)
+        // because Chrome extensions load each script independently
+        manualChunks: undefined,
+      },
     },
   },
 });
