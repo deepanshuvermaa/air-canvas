@@ -1,16 +1,21 @@
 /**
  * MAIN WORLD — synchronous getUserMedia patch.
- *
- * KEY DESIGN: We ALWAYS return a composite stream from getUserMedia,
- * even when AirDraw is disabled. When disabled, the canvas just passes
- * through raw camera frames. When enabled, we overlay ink + hand tracking.
- *
- * This avoids the "late activation" problem entirely — Meet always has
- * our canvas stream, and we just control what gets drawn on it.
+ * Production-quality AirDraw engine.
  */
 
 (function () {
   'use strict';
+
+  // ─── Trusted Types for Meet's CSP ───
+  if (typeof window.trustedTypes !== 'undefined' && window.trustedTypes.createPolicy) {
+    try {
+      window.trustedTypes.createPolicy('default', {
+        createScriptURL: function(url) { return url; },
+        createHTML: function(html) { return html; },
+        createScript: function(script) { return script; },
+      });
+    } catch (e) { /* already exists */ }
+  }
 
   // ─── State ───
   var enabled = false;
@@ -35,63 +40,47 @@
   var trackingFrameId = null;
   var compositeFrameId = null;
   var pipelineReady = false;
+  var drawingIdleTimer = null; // grace period before ending stroke
+  var mediapipeBlobUrl = null;
+  var mediapipeWasmPath = null;
+  var mediapipeModelPath = null;
 
   var settings = {
     strokeColor: '#FF3366',
-    strokeWidth: 4,
+    strokeWidth: 5,
     fadeMode: false,
     fadeDuration: 2000,
     smoothing: 0.5,
     shapeSnap: false,
     shapeSnapThreshold: 0.15,
-    gestureDebounceFrames: 3,
-    smoothingAlpha: 0.4,
+    smoothingAlpha: 0.35,   // lower = smoother (more lag), higher = more responsive
   };
-
-  // ─── Create Trusted Types policy for MediaPipe ───
-  // Google Meet enforces Trusted Types. MediaPipe internally sets script.src
-  // for WASM loading, which requires a TrustedScriptURL. We create a policy
-  // that allows our extension's URLs through.
-  if (typeof window.trustedTypes !== 'undefined' && window.trustedTypes.createPolicy) {
-    try {
-      window.trustedTypes.createPolicy('default', {
-        createScriptURL: function(url) { return url; },
-        createHTML: function(html) { return html; },
-        createScript: function(script) { return script; },
-      });
-      console.log('[AirDraw] Trusted Types default policy created');
-    } catch (e) {
-      // Policy may already exist — that's fine
-      console.log('[AirDraw] Trusted Types policy already exists or not needed');
-    }
-  }
 
   // ─── Patch getUserMedia IMMEDIATELY ───
   var originalGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
 
   navigator.mediaDevices.getUserMedia = async function (constraints) {
     var stream = await originalGUM(constraints);
-
     if (constraints && constraints.video) {
       console.log('[AirDraw] Intercepted getUserMedia (video)');
       realStream = stream;
-
-      // ALWAYS build composite — even when disabled, we pass through
       try {
-        var fakeStream = await buildPipeline(stream);
-        return fakeStream;
+        return await buildPipeline(stream);
       } catch (e) {
         console.error('[AirDraw] Pipeline failed, returning raw stream:', e);
         return stream;
       }
     }
-
     return stream;
   };
 
   console.log('[AirDraw] getUserMedia patched');
 
-  // ─── Build pipeline (called once when camera is first requested) ───
+  // ─── Helpers ───
+  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+  function dist(a, b) { return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)); }
+
+  // ─── Build pipeline ───
   async function buildPipeline(stream) {
     var videoTrack = stream.getVideoTracks()[0];
     var ts = videoTrack.getSettings();
@@ -100,7 +89,6 @@
 
     console.log('[AirDraw] Building pipeline ' + width + 'x' + height);
 
-    // Hidden video element to read camera frames
     videoElement = document.createElement('video');
     videoElement.srcObject = stream;
     videoElement.autoplay = true;
@@ -109,42 +97,34 @@
     videoElement.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
     document.documentElement.appendChild(videoElement);
 
-    await new Promise(function (resolve, reject) {
+    await new Promise(function (resolve) {
       videoElement.onloadedmetadata = function () {
-        videoElement.play().then(resolve).catch(reject);
+        videoElement.play().then(resolve).catch(resolve);
       };
-      setTimeout(function () { resolve(); }, 3000); // fallback timeout
+      setTimeout(resolve, 3000);
     });
 
-    // Composite canvas
     compositeCanvas = document.createElement('canvas');
     compositeCanvas.width = width;
     compositeCanvas.height = height;
     compositeCtx = compositeCanvas.getContext('2d');
 
-    // Drawing overlay canvas
     drawingCanvas = document.createElement('canvas');
     drawingCanvas.width = width;
     drawingCanvas.height = height;
     drawingCtx = drawingCanvas.getContext('2d');
 
-    // Start compositing loop (always runs — passthrough when disabled)
     startCompositing();
-
     pipelineReady = true;
 
-    // Capture composite as stream
     var fakeStream = compositeCanvas.captureStream(30);
-
-    // Preserve audio tracks
     var audioTracks = stream.getAudioTracks();
     for (var i = 0; i < audioTracks.length; i++) {
       fakeStream.addTrack(audioTracks[i]);
     }
 
-    console.log('[AirDraw] Pipeline ready — composite stream returned to app');
+    console.log('[AirDraw] Pipeline ready');
 
-    // If enabled was set before pipeline was ready, start tracking now
     if (enabled) {
       startHandTrackingIfNeeded(width, height);
     }
@@ -152,21 +132,17 @@
     return fakeStream;
   }
 
-  // ─── Compositing loop (ALWAYS runs) ───
+  // ─── Compositing loop ───
   function startCompositing() {
     if (compositingActive) return;
     compositingActive = true;
 
     function loop() {
       compositeFrameId = requestAnimationFrame(loop);
+      if (!compositeCtx || !videoElement || videoElement.readyState < 2) return;
 
-      if (!compositeCtx || !videoElement) return;
-      if (videoElement.readyState < 2) return; // not ready yet
-
-      // Layer 1: always draw camera frame
       compositeCtx.drawImage(videoElement, 0, 0, compositeCanvas.width, compositeCanvas.height);
 
-      // Layer 2: draw ink overlay only when enabled
       if (enabled && drawingCanvas) {
         renderDrawing();
         compositeCtx.drawImage(drawingCanvas, 0, 0);
@@ -180,10 +156,11 @@
   function renderDrawing() {
     if (!drawingCtx) return;
     var now = Date.now();
+    var cw = drawingCanvas.width;
+    var ch = drawingCanvas.height;
 
-    drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+    drawingCtx.clearRect(0, 0, cw, ch);
 
-    // Remove faded strokes
     if (settings.fadeMode) {
       strokes = strokes.filter(function (s) { return (now - s.createdAt) < settings.fadeDuration; });
     }
@@ -209,10 +186,20 @@
       if (stroke.snappedShape) {
         renderShape(drawingCtx, stroke.snappedShape);
       } else if (stroke.points.length >= 2) {
+        // Quadratic bezier smoothing for natural-looking strokes
         drawingCtx.beginPath();
         drawingCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
-        for (var j = 1; j < stroke.points.length; j++) {
-          drawingCtx.lineTo(stroke.points[j].x, stroke.points[j].y);
+
+        if (stroke.points.length === 2) {
+          drawingCtx.lineTo(stroke.points[1].x, stroke.points[1].y);
+        } else {
+          for (var j = 1; j < stroke.points.length - 1; j++) {
+            var cx = (stroke.points[j].x + stroke.points[j + 1].x) / 2;
+            var cy = (stroke.points[j].y + stroke.points[j + 1].y) / 2;
+            drawingCtx.quadraticCurveTo(stroke.points[j].x, stroke.points[j].y, cx, cy);
+          }
+          var last = stroke.points[stroke.points.length - 1];
+          drawingCtx.lineTo(last.x, last.y);
         }
         drawingCtx.stroke();
       }
@@ -220,20 +207,29 @@
 
     drawingCtx.globalAlpha = 1;
 
-    // Draw cursor indicator
+    // Cursor indicator
     if (cursorPos && enabled) {
+      // Outer ring
       drawingCtx.beginPath();
-      var radius = isCursorDrawing ? settings.strokeWidth * 1.5 : 5;
+      var radius = isCursorDrawing ? settings.strokeWidth + 4 : 8;
       drawingCtx.arc(cursorPos.x, cursorPos.y, radius, 0, 2 * Math.PI);
+      drawingCtx.strokeStyle = isCursorDrawing ? settings.strokeColor : 'rgba(255,255,255,0.8)';
+      drawingCtx.lineWidth = 2;
+      drawingCtx.stroke();
+
+      // Inner dot
+      drawingCtx.beginPath();
+      drawingCtx.arc(cursorPos.x, cursorPos.y, 3, 0, 2 * Math.PI);
+      drawingCtx.fillStyle = isCursorDrawing ? settings.strokeColor : 'rgba(255,255,255,0.9)';
+      drawingCtx.fill();
+
+      // "Drawing" indicator: filled ring when drawing
       if (isCursorDrawing) {
-        drawingCtx.strokeStyle = settings.strokeColor;
-        drawingCtx.lineWidth = 2;
+        drawingCtx.beginPath();
+        drawingCtx.arc(cursorPos.x, cursorPos.y, radius + 3, 0, 2 * Math.PI);
+        drawingCtx.strokeStyle = 'rgba(255,255,255,0.4)';
+        drawingCtx.lineWidth = 1;
         drawingCtx.stroke();
-      } else {
-        drawingCtx.fillStyle = settings.strokeColor;
-        drawingCtx.globalAlpha = 0.5;
-        drawingCtx.fill();
-        drawingCtx.globalAlpha = 1;
       }
     }
   }
@@ -268,7 +264,7 @@
   // ─── Shape detection ───
   function detectShape(stroke) {
     var pts = stroke.points;
-    if (pts.length < 5) return null;
+    if (pts.length < 8) return null;
 
     var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (var i = 0; i < pts.length; i++) {
@@ -284,7 +280,7 @@
     var avgR = 0;
     for (var i = 0; i < pts.length; i++) avgR += dist(pts[i], center);
     avgR /= pts.length;
-    if (avgR > 10) {
+    if (avgR > 15) {
       var variance = 0;
       for (var i = 0; i < pts.length; i++) {
         var d = dist(pts[i], center);
@@ -298,7 +294,7 @@
     }
 
     // Rectangle
-    if (dist(pts[0], pts[pts.length - 1]) < (bbox.width + bbox.height) * 0.15 && bbox.width > 15 && bbox.height > 15) {
+    if (dist(pts[0], pts[pts.length - 1]) < (bbox.width + bbox.height) * 0.15 && bbox.width > 20 && bbox.height > 20) {
       var tol = Math.max(bbox.width, bbox.height) * 0.15;
       var nearEdge = 0;
       for (var i = 0; i < pts.length; i++) {
@@ -314,7 +310,7 @@
     // Line
     var start = pts[0], end = pts[pts.length - 1];
     var len = dist(start, end);
-    if (len > 20) {
+    if (len > 30) {
       var maxDev = 0;
       for (var i = 0; i < pts.length; i++) {
         var p = pts[i];
@@ -332,29 +328,15 @@
     return null;
   }
 
-  function dist(a, b) { return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)); }
-  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
-
   // ─── Hand tracking ───
-  // MediaPipe is loaded via blob URL (bypasses page CSP which allows blob:).
-  // The ISOLATED world fetches the bundle from extension files, creates a
-  // blob URL, and passes it here. We import() from the blob URL.
-
-  var mediapipeBlobUrl = null;
-  var mediapipeWasmPath = null;
-  var mediapipeModelPath = null;
-  var trackingFrameId = null;
-
   function startHandTrackingIfNeeded(width, height) {
     if (trackingActive) return;
     if (!mediapipeBlobUrl) {
-      console.log('[AirDraw] Waiting for MediaPipe bundle blob URL...');
-      // Retry after a short delay
       setTimeout(function() { startHandTrackingIfNeeded(width, height); }, 500);
       return;
     }
     trackingActive = true;
-    console.log('[AirDraw] Loading MediaPipe via blob URL...');
+    console.log('[AirDraw] Loading MediaPipe...');
     initAndRunTracking(width, height);
   }
 
@@ -362,7 +344,6 @@
     try {
       var vision = await import(mediapipeBlobUrl);
       var wasmFileset = await vision.FilesetResolver.forVisionTasks(mediapipeWasmPath);
-
       handTracker = await vision.HandLandmarker.createFromOptions(wasmFileset, {
         baseOptions: {
           modelAssetPath: mediapipeModelPath,
@@ -375,7 +356,7 @@
         minTrackingConfidence: 0.5,
       });
 
-      console.log('[AirDraw] HandLandmarker ready, starting tracking');
+      console.log('[AirDraw] HandLandmarker ready');
       runTrackingLoop(width, height);
     } catch (e) {
       console.error('[AirDraw] MediaPipe init failed:', e);
@@ -385,48 +366,31 @@
 
   function runTrackingLoop(width, height) {
     function process() {
-      if (!enabled || !trackingActive) {
-        trackingFrameId = null;
-        return;
-      }
+      if (!enabled || !trackingActive) { trackingFrameId = null; return; }
       trackingFrameId = requestAnimationFrame(process);
-
       if (!handTracker || !videoElement || videoElement.readyState < 2) return;
 
       try {
         var result = handTracker.detectForVideo(videoElement, performance.now());
-        var landmarks = null;
-        if (result.landmarks && result.landmarks.length > 0) {
-          landmarks = result.landmarks[0];
-        }
+        var landmarks = (result.landmarks && result.landmarks.length > 0) ? result.landmarks[0] : null;
         var gesture = detectGesture(landmarks, width, height);
         handleGesture(gesture);
-      } catch (e) {
-        // skip frame
-      }
+      } catch (e) { /* skip frame */ }
     }
     trackingFrameId = requestAnimationFrame(process);
   }
 
   function stopTracking() {
     trackingActive = false;
-    if (trackingFrameId) {
-      cancelAnimationFrame(trackingFrameId);
-      trackingFrameId = null;
-    }
+    if (trackingFrameId) { cancelAnimationFrame(trackingFrameId); trackingFrameId = null; }
     cursorPos = null;
     lastSmoothedPoint = null;
     gestureState = 'IDLE';
     previousGestureState = 'IDLE';
-    if (currentStroke) {
-      strokes.push(currentStroke);
-      currentStroke = null;
-    }
+    if (currentStroke) { strokes.push(currentStroke); currentStroke = null; }
   }
 
   // ─── Gesture detection ───
-  // Use a simple, robust approach: check if fingertip (tip) is further
-  // from the wrist than the PIP joint. This works regardless of hand angle.
   function isFingerOpen(landmarks, tipIdx, pipIdx) {
     var wrist = landmarks[0];
     var tip = landmarks[tipIdx];
@@ -435,8 +399,6 @@
     var pipDist = Math.sqrt(Math.pow(pip.x - wrist.x, 2) + Math.pow(pip.y - wrist.y, 2));
     return tipDist > pipDist;
   }
-
-  var debugLogCounter = 0;
 
   function detectGesture(landmarks, width, height) {
     if (!landmarks || landmarks.length < 21) {
@@ -447,15 +409,15 @@
     var middleOpen = isFingerOpen(landmarks, 12, 10);
     var ringOpen = isFingerOpen(landmarks, 16, 14);
     var pinkyOpen = isFingerOpen(landmarks, 20, 18);
-
-    // Count how many fingers are open
     var openCount = (indexOpen ? 1 : 0) + (middleOpen ? 1 : 0) + (ringOpen ? 1 : 0) + (pinkyOpen ? 1 : 0);
 
-    // Mirrored x coordinate
-    var rawX = (1 - landmarks[8].x) * width;
+    // *** FIX: No x-mirroring. Landmarks are in raw camera space,
+    // composite canvas draws raw camera frame. Coordinates match directly.
+    var rawX = landmarks[8].x * width;
     var rawY = landmarks[8].y * height;
     var now = Date.now();
 
+    // EMA smoothing — lower alpha = smoother but laggier
     var fingerTip;
     if (lastSmoothedPoint) {
       fingerTip = {
@@ -468,28 +430,13 @@
     }
     lastSmoothedPoint = fingerTip;
 
-    // Debug logging every 60 frames (~2 sec)
-    debugLogCounter++;
-    if (debugLogCounter % 60 === 0) {
-      console.log('[AirDraw Gesture] index=' + indexOpen + ' middle=' + middleOpen +
-        ' ring=' + ringOpen + ' pinky=' + pinkyOpen + ' openCount=' + openCount +
-        ' state=' + gestureState);
-    }
-
-    // All 4 fingers open = ERASING (open palm)
+    // All 4 open = ERASING
     if (openCount >= 4) return transitionGesture('ERASING', fingerTip);
-
-    // Index open (regardless of others) = DRAWING
-    // This is the key fix: don't require other fingers to be curled.
-    // Just having the index finger open is enough to draw.
+    // Index open (+ maybe one other) = DRAWING
     if (indexOpen && openCount <= 2) return transitionGesture('DRAWING', fingerTip);
-
-    // 3 fingers open but not all 4 = still HOVERING
-    if (openCount === 3) return transitionGesture('HOVERING', fingerTip);
-
-    // No fingers open = fist = IDLE (stop drawing)
+    // Fist = IDLE
     if (openCount === 0) return transitionGesture('IDLE', fingerTip);
-
+    // 3 fingers or other = HOVERING
     return transitionGesture('HOVERING', fingerTip);
   }
 
@@ -498,13 +445,20 @@
       gestureFrameCount = 0;
     } else {
       gestureFrameCount++;
-      // Reduced debounce: only need 2 consistent frames to transition
-      if (gestureFrameCount >= 2) {
-        var prev = gestureState;
+      // Higher debounce = more stable, less flickering
+      // DRAWING->IDLE needs more frames (grace period to prevent
+      // accidental stroke breaks when finger wobbles)
+      var threshold = 2;
+      if (gestureState === 'DRAWING' && (candidate === 'IDLE' || candidate === 'HOVERING')) {
+        threshold = 8; // ~270ms grace before stopping a stroke
+      }
+      if (gestureState === 'DRAWING' && candidate === 'ERASING') {
+        threshold = 6; // need clear intent to erase
+      }
+      if (gestureFrameCount >= threshold) {
         gestureState = candidate;
         gestureFrameCount = 0;
         if (candidate === 'IDLE') lastSmoothedPoint = null;
-        console.log('[AirDraw Gesture] ' + prev + ' -> ' + candidate);
       }
     }
     return { state: gestureState, fingerTip: fingerTip };
@@ -519,6 +473,7 @@
 
     if (state === 'DRAWING' && fingerTip) {
       if (previousGestureState !== 'DRAWING') {
+        // Begin new stroke
         currentStroke = {
           id: uid(),
           points: [fingerTip],
@@ -528,15 +483,24 @@
           snappedShape: null
         };
       } else if (currentStroke) {
-        currentStroke.points.push(fingerTip);
+        // Add point — skip if too close to last point (reduces noise)
+        var lastPt = currentStroke.points[currentStroke.points.length - 1];
+        var d = dist(fingerTip, lastPt);
+        if (d > 2) { // minimum 2px movement to add a point
+          currentStroke.points.push(fingerTip);
+        }
       }
     } else if (previousGestureState === 'DRAWING' && currentStroke) {
-      if (settings.shapeSnap && currentStroke.points.length >= 5) {
+      // End stroke
+      if (settings.shapeSnap && currentStroke.points.length >= 8) {
         var shape = detectShape(currentStroke);
         if (shape) currentStroke.snappedShape = shape;
       }
-      strokes.push(currentStroke);
-      undoStack = [];
+      // Only save if stroke has meaningful length
+      if (currentStroke.points.length >= 3) {
+        strokes.push(currentStroke);
+        undoStack = [];
+      }
       currentStroke = null;
     }
 
@@ -553,18 +517,15 @@
   function enableAirDraw() {
     enabled = true;
     console.log('[AirDraw] Enabled');
-
     if (pipelineReady && compositeCanvas) {
       startHandTrackingIfNeeded(compositeCanvas.width, compositeCanvas.height);
     }
-
     postStatus();
   }
 
   function disableAirDraw() {
     enabled = false;
     stopTracking();
-    // Clear drawing state
     strokes = [];
     currentStroke = null;
     undoStack = [];
@@ -580,7 +541,7 @@
     }, '*');
   }
 
-  // ─── Listen for commands from ISOLATED world ───
+  // ─── Message listener ───
   window.addEventListener('message', function (event) {
     if (!event.data || event.data.source !== 'airdraw-isolated') return;
 
@@ -615,12 +576,11 @@
         if (!enabled) enableAirDraw();
         break;
       case 'MEDIAPIPE_BUNDLE':
-        // Received blob URL for MediaPipe from ISOLATED world
         if (event.data.payload) {
           mediapipeBlobUrl = event.data.payload.blobUrl;
           mediapipeWasmPath = event.data.payload.wasmPath;
           mediapipeModelPath = event.data.payload.modelPath;
-          console.log('[AirDraw] MediaPipe bundle blob URL received');
+          console.log('[AirDraw] MediaPipe bundle received');
         }
         break;
     }
