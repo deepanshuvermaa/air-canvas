@@ -58,20 +58,6 @@
       },
       "description": "Undo last stroke"
     },
-    "record-ghost": {
-      "suggested_key": {
-        "default": "Alt+R",
-        "mac": "Alt+R"
-      },
-      "description": "Record Ghost Mode loop"
-    },
-    "toggle-ghost": {
-      "suggested_key": {
-        "default": "Alt+Shift+G",
-        "mac": "Alt+Shift+G"
-      },
-      "description": "Toggle Ghost Mode"
-    },
     "screen-mode": {
       "suggested_key": {
         "default": "Alt+S",
