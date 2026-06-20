@@ -67,8 +67,8 @@
     },
     "toggle-ghost": {
       "suggested_key": {
-        "default": "Alt+G",
-        "mac": "Alt+G"
+        "default": "Alt+Shift+G",
+        "mac": "Alt+Shift+G"
       },
       "description": "Toggle Ghost Mode"
     },

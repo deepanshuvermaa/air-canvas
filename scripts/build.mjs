@@ -122,6 +122,14 @@ const manifest = {
       suggested_key: { default: "Alt+Z", mac: "Alt+Z" },
       description: "Undo last stroke"
     },
+    "record-ghost": {
+      suggested_key: { default: "Alt+R", mac: "Alt+R" },
+      description: "Record Ghost Mode loop"
+    },
+    "toggle-ghost": {
+      suggested_key: { default: "Alt+Shift+G", mac: "Alt+Shift+G" },
+      description: "Toggle Ghost Mode"
+    },
     "screen-mode": {
       suggested_key: { default: "Alt+S", mac: "Alt+S" },
       description: "Toggle Screen Annotation Mode"

@@ -77,6 +77,17 @@ async function init(): Promise<void> {
   if (stored.ghost_timer !== undefined) {
     ghostTimerSelect.value = String(stored.ghost_timer);
   }
+
+  // Push ghost settings to content script on popup open
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (activeTab?.id) {
+    const timerVal = Number(ghostTimerSelect.value);
+    const nameVal = ghostUsernameInput.value.trim();
+    const automuteVal = ghostAutomuteInput.checked;
+    chrome.tabs.sendMessage(activeTab.id, { type: 'GHOST_SET_TIMER', payload: { durationMs: timerVal } }).catch(function () {});
+    chrome.tabs.sendMessage(activeTab.id, { type: 'GHOST_SET_NAME', payload: { name: nameVal } }).catch(function () {});
+    chrome.tabs.sendMessage(activeTab.id, { type: 'GHOST_SET_AUTOMUTE', payload: { enabled: automuteVal } }).catch(function () {});
+  }
 }
 
 function applySettingsToUI(s: Record<string, unknown>): void {

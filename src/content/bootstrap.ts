@@ -54,6 +54,7 @@ scriptEl.type = 'text/javascript';
 
 // ─── Status badge ───
 let statusBadge: HTMLElement | null = null;
+let currentGhostState = 'idle';
 
 function createBadge(): HTMLElement {
   const badge = document.createElement('div');
@@ -90,7 +91,14 @@ function createBadge(): HTMLElement {
   badge.appendChild(style);
   badge.appendChild(dot);
   badge.appendChild(label);
-  badge.addEventListener('click', function () { sendToMain('TOGGLE'); });
+  badge.addEventListener('click', function () {
+    // During ghost mode, clicking badge should deactivate ghost, not toggle AirDraw
+    if (currentGhostState === 'active') {
+      sendToMain('TOGGLE_GHOST');
+    } else {
+      sendToMain('TOGGLE');
+    }
+  });
   return badge;
 }
 
@@ -111,15 +119,15 @@ function showBadge(show: boolean): void {
 
 // ─── Ghost Mode badge updates ───
 function updateGhostBadge(ghostState: string): void {
+  currentGhostState = ghostState;
   if (!statusBadge) return;
 
   const dot = statusBadge.querySelector('#airdraw-status-dot') as HTMLElement | null;
   const label = statusBadge.querySelector('span:last-child') as HTMLElement | null;
 
   if (ghostState === 'active') {
-    statusBadge.classList.add('active');
-    if (dot) dot.style.background = '#8B5CF6';
-    if (label) label.textContent = 'Ghost ACTIVE';
+    // HIDE badge during ghost — it's visible on screen share and blows cover
+    statusBadge.classList.remove('active');
   } else if (ghostState === 'recording') {
     statusBadge.classList.add('active');
     if (dot) dot.style.background = '#EF4444';
@@ -253,6 +261,7 @@ chrome.runtime.onMessage.addListener(function (
     case 'GHOST_SET_TIMER': sendToMain('GHOST_SET_TIMER', message.payload); break;
     case 'GHOST_SET_NAME': sendToMain('GHOST_SET_NAME', message.payload); break;
     case 'GHOST_SET_AUTOMUTE': sendToMain('GHOST_SET_AUTOMUTE', message.payload); break;
+    case 'GHOST_REQUEST_PIP': sendToMain('GHOST_REQUEST_PIP'); break;
     case 'SCREEN_MODE': sendToMain('SCREEN_MODE'); break;
   }
   sendResponse({ received: true });

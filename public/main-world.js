@@ -74,6 +74,7 @@
   // ─── Ghost Mode: Auto-mute ───
   var ghostSavedMuteState = false;
   var ghostAutoMuteEnabled = true;
+  var capturedAudioTracks = []; // all audio tracks from any getUserMedia call
 
   // ─── Ghost Mode: Auto-return timer ───
   var ghostAutoReturnTimer = null;
@@ -103,6 +104,15 @@
 
   navigator.mediaDevices.getUserMedia = async function (constraints) {
     var stream = await originalGUM(constraints);
+
+    // Capture ALL audio tracks for auto-mute feature
+    var audioTracks = stream.getAudioTracks();
+    for (var i = 0; i < audioTracks.length; i++) {
+      if (capturedAudioTracks.indexOf(audioTracks[i]) === -1) {
+        capturedAudioTracks.push(audioTracks[i]);
+      }
+    }
+
     if (constraints && constraints.video) {
       console.log('[AirDraw] Intercepted getUserMedia (video)');
       realStream = stream;
@@ -527,7 +537,9 @@
     }
   }
 
-  // ─── Shape detection (improved tolerances) ───
+  // ─── Shape detection ───
+  // Order matters: check RECTANGLE before CIRCLE because a rectangle
+  // that's roughly closed can be misdetected as a circle.
   function detectShape(stroke) {
     var pts = stroke.points;
     if (pts.length < 6) return null;
@@ -543,46 +555,55 @@
     var bbox = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
     var center = { x: minX + bbox.width / 2, y: minY + bbox.height / 2 };
     var startEnd = dist(pts[0], pts[pts.length - 1]);
-    var isClosed = startEnd < Math.max(bbox.width, bbox.height) * 0.4;
+    var maxDim = Math.max(bbox.width, bbox.height);
+    var isClosed = startEnd < maxDim * 0.35;
+    var aspectRatio = bbox.width / (bbox.height || 1);
 
-    // ── Circle: closed stroke with consistent radius ──
-    var avgR = 0;
-    for (var i = 0; i < pts.length; i++) avgR += dist(pts[i], center);
-    avgR /= pts.length;
-    if (avgR > 10 && isClosed) {
-      var variance = 0;
-      for (var i = 0; i < pts.length; i++) {
-        var d = dist(pts[i], center);
-        var diff = (d - avgR) / avgR;
-        variance += diff * diff;
-      }
-      variance /= pts.length;
-      if (variance < thresh * 1.5) {
-        return { type: 'circle', center: center, radius: avgR };
-      }
-    }
-
-    // ── Rectangle: closed stroke hugging bounding box edges ──
-    if (isClosed && bbox.width > 15 && bbox.height > 15) {
-      var tol = Math.max(bbox.width, bbox.height) * 0.2;
+    // ── 1. RECTANGLE (check FIRST): closed, has corners, aspect ratio not 1:1 ──
+    if (isClosed && bbox.width > 20 && bbox.height > 20) {
+      var tol = maxDim * 0.22;
       var nearEdge = 0;
       for (var i = 0; i < pts.length; i++) {
         var p = pts[i];
-        var minD = Math.min(
-          Math.abs(p.x - bbox.x), Math.abs(p.x - (bbox.x + bbox.width)),
-          Math.abs(p.y - bbox.y), Math.abs(p.y - (bbox.y + bbox.height))
-        );
-        if (minD < tol) nearEdge++;
+        var dLeft = Math.abs(p.x - bbox.x);
+        var dRight = Math.abs(p.x - (bbox.x + bbox.width));
+        var dTop = Math.abs(p.y - bbox.y);
+        var dBottom = Math.abs(p.y - (bbox.y + bbox.height));
+        if (Math.min(dLeft, dRight, dTop, dBottom) < tol) nearEdge++;
       }
-      if (nearEdge / pts.length > 0.7) {
+      // Rectangle if >60% of points near edges AND aspect ratio is not too circular
+      if (nearEdge / pts.length > 0.6 && (aspectRatio > 1.3 || aspectRatio < 0.77)) {
+        return { type: 'rectangle', topLeft: { x: bbox.x, y: bbox.y }, width: bbox.width, height: bbox.height };
+      }
+      // Even with ~1:1 aspect, if edge-hugging is very strong, it's a square/rect
+      if (nearEdge / pts.length > 0.75) {
         return { type: 'rectangle', topLeft: { x: bbox.x, y: bbox.y }, width: bbox.width, height: bbox.height };
       }
     }
 
-    // ── Line / Arrow: open stroke, points near start-to-end line ──
+    // ── 2. CIRCLE: closed, consistent radius, roughly 1:1 aspect ──
+    if (isClosed && aspectRatio > 0.5 && aspectRatio < 2.0) {
+      var avgR = 0;
+      for (var i = 0; i < pts.length; i++) avgR += dist(pts[i], center);
+      avgR /= pts.length;
+      if (avgR > 12) {
+        var variance = 0;
+        for (var i = 0; i < pts.length; i++) {
+          var d = dist(pts[i], center);
+          var diff = (d - avgR) / avgR;
+          variance += diff * diff;
+        }
+        variance /= pts.length;
+        if (variance < thresh) {
+          return { type: 'circle', center: center, radius: avgR };
+        }
+      }
+    }
+
+    // ── 3. LINE / ARROW: open stroke ──
     var start = pts[0], end = pts[pts.length - 1];
     var len = dist(start, end);
-    if (len > 20 && !isClosed) {
+    if (len > 25 && !isClosed) {
       var maxDev = 0;
       for (var i = 0; i < pts.length; i++) {
         var p = pts[i];
@@ -593,7 +614,6 @@
         if (dev > maxDev) maxDev = dev;
       }
       if (maxDev / len < thresh) {
-        // Check for arrow: direction change in last 20% of points
         var isArrow = false;
         if (pts.length >= 10) {
           var cut = Math.floor(pts.length * 0.8);
@@ -753,11 +773,11 @@
       if (gestureState === 'DRAWING' && candidate === 'HOVERING') threshold = 5;
       if (gestureState === 'DRAWING' && candidate === 'IDLE') threshold = 10;
       if (gestureState === 'DRAWING' && candidate === 'ERASING') threshold = 8;
-      // KEY FIX: When coming FROM hovering (peace sign), require more frames
-      // to start drawing. This prevents the trailing index finger from
-      // accidentally starting a new stroke when you close peace sign.
-      if (gestureState === 'HOVERING' && candidate === 'DRAWING') threshold = 8;
-      if (gestureState === 'IDLE' && candidate === 'DRAWING') threshold = 4;
+      // KEY FIX: From HOVERING to DRAWING needs very high threshold.
+      // When you close peace sign, index finger stays up for 300-500ms.
+      // 12 frames = ~400ms which absorbs this transition cleanly.
+      if (gestureState === 'HOVERING' && candidate === 'DRAWING') threshold = 12;
+      if (gestureState === 'IDLE' && candidate === 'DRAWING') threshold = 5;
       if (candidate === 'CLICKING') threshold = 4; // need clear pinch intent
       if (gestureState === 'CLICKING') threshold = 5; // hold release longer
 
@@ -969,58 +989,68 @@
 
       var quality = this.getQuality(now);
 
-      // Active freeze burst
+      // Active freeze burst — SHORTER bursts (1-4 frames = 33-133ms)
+      // Real bad connections freeze briefly, not for seconds
       if (this.inFreezeBurst) {
         this.freezeFramesRemaining--;
         d.freeze = true;
-        if (Math.random() < 0.15 * scale) d.qualityDrop = true;
+        // Quality drop more often during freeze (pixelated catch-up frame)
+        if (Math.random() < 0.3 * scale) d.qualityDrop = true;
         if (this.freezeFramesRemaining <= 0) {
           this.inFreezeBurst = false;
           d.freeze = false;
-          d.catchUpJump = 0.05 + Math.random() * 0.1;
+          d.catchUpJump = 0.03 + Math.random() * 0.08; // smaller jumps
+          d.qualityDrop = Math.random() < 0.4 * scale; // catch-up frame often pixelated
         }
         return d;
       }
 
-      // Start new freeze burst
-      if (quality < 0.35 * scale && Math.random() < 0.12 * scale) {
+      // Start new freeze burst — shorter, more frequent
+      if (quality < 0.4 * scale && Math.random() < 0.08 * scale) {
         this.inFreezeBurst = true;
-        this.freezeFramesRemaining = 3 + Math.floor(Math.random() * 10 * scale);
+        // 1-4 frames (33-133ms) — brief hitches, not long freezes
+        this.freezeFramesRemaining = 1 + Math.floor(Math.random() * 4 * scale);
         d.freeze = true;
         return d;
       }
 
-      // Micro-stutter
-      if (quality < 0.5 && Math.random() < 0.05 * scale) {
+      // Micro-stutter (1-frame duplicate)
+      if (quality < 0.55 && Math.random() < 0.04 * scale) {
         d.freeze = true;
         return d;
       }
 
-      // Loop seam artifact
+      // Occasional quality drop WITHOUT freeze (like adaptive bitrate)
+      if (quality < 0.45 && Math.random() < 0.06 * scale) {
+        d.qualityDrop = true;
+        return d;
+      }
+
+      // Loop seam: brief freeze + quality drop to mask the cut
       var loopSec = this.loopDurationMs / 1000;
       var distFromSeam = Math.min(videoCurrentTime, Math.abs(loopSec - videoCurrentTime));
-      if (distFromSeam < 0.3) {
-        if (Math.random() < 0.4 * scale) {
+      if (distFromSeam < 0.2) {
+        if (Math.random() < 0.5 * scale) {
           this.inFreezeBurst = true;
-          this.freezeFramesRemaining = 3 + Math.floor(Math.random() * 5);
+          this.freezeFramesRemaining = 2 + Math.floor(Math.random() * 3);
           d.freeze = true;
+          d.qualityDrop = true;
           return d;
         }
-        d.alpha = 0.92 + Math.random() * 0.08;
       }
 
-      // Framerate dip
+      // Framerate dip — shorter (300-800ms)
       if (this.inFramerateDip) {
         if (now > this.framerateDipUntil) {
           this.inFramerateDip = false;
           this.lastFramerateDipEnd = now;
-          this.nextFramerateDipInterval = 10000 + Math.random() * 10000;
-        } else if (Math.random() < 0.5) {
-          d.freeze = true;
+          this.nextFramerateDipInterval = 12000 + Math.random() * 18000;
+        } else if (Math.random() < 0.35) {
+          d.freeze = true; // skip ~35% of frames = ~20fps feel
         }
       } else if (scale > 0 && now - this.lastFramerateDipEnd > this.nextFramerateDipInterval / scale) {
         this.inFramerateDip = true;
-        this.framerateDipUntil = now + 500 + Math.random() * 1000;
+        this.framerateDipUntil = now + 300 + Math.random() * 500;
       }
 
       return d;
@@ -1103,13 +1133,19 @@
       if (d.freeze) return;
 
       if (d.qualityDrop && this.offCanvas && this.offCtx) {
-        var hw = Math.floor(w / 2), hh = Math.floor(h / 2);
-        this.offCanvas.width = hw;
-        this.offCanvas.height = hh;
-        this.offCtx.drawImage(this.loopVideo, 0, 0, hw, hh);
+        // Draw at 25-35% resolution for visible but not extreme pixelation
+        var scaleFactor = 0.25 + Math.random() * 0.1;
+        var sw = Math.floor(w * scaleFactor), sh = Math.floor(h * scaleFactor);
+        this.offCanvas.width = sw;
+        this.offCanvas.height = sh;
+        // Disable image smoothing for blocky upscale (like real codec artifacts)
+        this.offCtx.imageSmoothingEnabled = false;
+        this.offCtx.drawImage(this.loopVideo, 0, 0, sw, sh);
         var prev = ctx.globalAlpha;
         ctx.globalAlpha = d.alpha;
+        ctx.imageSmoothingEnabled = false;
         ctx.drawImage(this.offCanvas, 0, 0, w, h);
+        ctx.imageSmoothingEnabled = true;
         ctx.globalAlpha = prev;
         return;
       }
@@ -1141,30 +1177,34 @@
   // Shows users what meeting participants see in a floating always-on-top window
 
   function startPiP() {
-    if (pipVideo) return; // already running
+    // PiP requires a user gesture — we prepare the video but DON'T request PiP
+    // PiP will be requested from a user-gesture context (popup button click)
+    if (pipVideo) return;
     if (!compositeCanvas) return;
 
     pipVideo = document.createElement('video');
-    pipVideo.srcObject = compositeCanvas.captureStream(15); // lower fps for preview
+    pipVideo.srcObject = compositeCanvas.captureStream(15);
     pipVideo.muted = true;
     pipVideo.playsInline = true;
     pipVideo.autoplay = true;
     pipVideo.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
     document.documentElement.appendChild(pipVideo);
+    pipVideo.play().catch(function () {});
+  }
 
-    pipVideo.play().then(function () {
-      if (pipVideo && document.pictureInPictureEnabled) {
-        pipVideo.requestPictureInPicture().then(function (win) {
-          pipWindow = win;
-          pipWindow.onresize = function () {};
-          win.addEventListener('pauspictureinpicture', function () {
-            pipWindow = null;
-          });
-        }).catch(function (e) {
-          console.warn('[AirDraw] PiP not available:', e);
+  // Called from a user-gesture context (message from popup button click)
+  function requestPiP() {
+    if (!pipVideo) startPiP();
+    if (pipVideo && document.pictureInPictureEnabled && !document.pictureInPictureElement) {
+      pipVideo.requestPictureInPicture().then(function (win) {
+        pipWindow = win;
+        win.addEventListener('leavepictureinpicture', function () {
+          pipWindow = null;
         });
-      }
-    });
+      }).catch(function (e) {
+        console.warn('[AirDraw] PiP not available:', e);
+      });
+    }
   }
 
   function stopPiP() {
@@ -1324,22 +1364,26 @@
   // ─── Feature 5: Auto-mute mic during ghost ───
 
   function autoMuteMic() {
-    if (!ghostAutoMuteEnabled || !realStream) return;
-    var audioTracks = realStream.getAudioTracks();
-    if (audioTracks.length > 0) {
-      ghostSavedMuteState = !audioTracks[0].enabled;
-      audioTracks[0].enabled = false; // mute
-      console.log('[AirDraw] Auto-muted mic for ghost mode');
+    if (!ghostAutoMuteEnabled) return;
+    // Mute all captured audio tracks (from any getUserMedia call)
+    if (capturedAudioTracks.length > 0) {
+      ghostSavedMuteState = !capturedAudioTracks[0].enabled; // save current state
+      for (var i = 0; i < capturedAudioTracks.length; i++) {
+        capturedAudioTracks[i].enabled = false;
+      }
+      console.log('[AirDraw] Auto-muted ' + capturedAudioTracks.length + ' audio track(s)');
+    } else {
+      console.log('[AirDraw] No audio tracks captured for muting');
     }
   }
 
   function autoUnmuteMic() {
-    if (!ghostAutoMuteEnabled || !realStream) return;
-    var audioTracks = realStream.getAudioTracks();
-    if (audioTracks.length > 0) {
-      // Restore to state before ghost activation
-      audioTracks[0].enabled = !ghostSavedMuteState;
-      console.log('[AirDraw] Restored mic state');
+    if (!ghostAutoMuteEnabled) return;
+    for (var i = 0; i < capturedAudioTracks.length; i++) {
+      capturedAudioTracks[i].enabled = !ghostSavedMuteState;
+    }
+    if (capturedAudioTracks.length > 0) {
+      console.log('[AirDraw] Restored mic state on ' + capturedAudioTracks.length + ' track(s)');
     }
   }
 
@@ -1446,70 +1490,46 @@
     observer: null,
     chatObserver: null,
     active: false,
+    lastAlerts: {},       // debounce: { alertType: timestamp }
+    ALERT_COOLDOWN: 10000, // 10 seconds between same alert type
 
     start: function () {
       if (this.active) return;
       this.active = true;
+      this.lastAlerts = {};
 
-      // Monitor for screen share events (participant count changes, share buttons)
-      this.observer = new MutationObserver(function (mutations) {
-        for (var i = 0; i < mutations.length; i++) {
-          var mutation = mutations[i];
-          // Detect screen share start (common across Meet/Teams/Zoom)
-          for (var j = 0; j < mutation.addedNodes.length; j++) {
-            var node = mutation.addedNodes[j];
-            if (node.nodeType !== 1) continue;
-            var text = (node.textContent || '').toLowerCase();
-
-            // Screen share detection
-            if (text.indexOf('presenting') !== -1 || text.indexOf('screen share') !== -1 || text.indexOf('sharing screen') !== -1) {
-              MeetingMonitor._alert('screen_share', 'Someone started screen sharing');
-            }
-
-            // Participant join/leave
-            if (text.indexOf('joined') !== -1 || text.indexOf('has joined') !== -1) {
-              MeetingMonitor._alert('participant_joined', 'Someone joined the meeting');
-            }
-            if (text.indexOf('left') !== -1 || text.indexOf('has left') !== -1) {
-              MeetingMonitor._alert('participant_left', 'Someone left the meeting');
-            }
-          }
-        }
-      });
-
-      this.observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        characterData: true
-      });
-
-      // Monitor chat messages for user's name
+      // Only monitor chat area for name mentions, not the full DOM
+      // The full-DOM approach triggers on thousands of irrelevant mutations
       this._startChatMonitor();
 
-      console.log('[AirDraw] Meeting monitor started');
+      console.log('[AirDraw] Meeting monitor started (chat-only mode)');
     },
 
     _startChatMonitor: function () {
-      // Look for common chat containers across platforms
-      var chatSelectors = [
-        '[data-message-text]',        // Google Meet
-        '.message-body',              // Zoom
-        '.chat-message',              // Teams
-        '[role="log"]',               // Generic ARIA
-      ];
+      var self = this;
 
       this.chatObserver = new MutationObserver(function (mutations) {
-        if (!ghostActive || !ghostUserName) return;
-        var nameVariants = ghostUserName.toLowerCase().split(',').map(function (n) { return n.trim(); });
+        if (!ghostActive) return;
+        var nameVariants = ghostUserName
+          ? ghostUserName.toLowerCase().split(',').map(function (n) { return n.trim(); }).filter(function (n) { return n.length > 0; })
+          : [];
 
         for (var i = 0; i < mutations.length; i++) {
           for (var j = 0; j < mutations[i].addedNodes.length; j++) {
             var node = mutations[i].addedNodes[j];
             if (node.nodeType !== 1) continue;
-            var text = (node.textContent || '').toLowerCase();
+
+            // Only check small elements (toasts, notifications, chat bubbles)
+            // Skip large container elements to avoid false positives
+            var text = (node.textContent || '');
+            if (text.length > 500 || text.length < 3) continue;
+
+            var lowerText = text.toLowerCase();
+
+            // Chat name detection
             for (var k = 0; k < nameVariants.length; k++) {
-              if (text.indexOf(nameVariants[k]) !== -1) {
-                MeetingMonitor._alert('name_in_chat', 'Your name was mentioned in chat: "' + node.textContent.substring(0, 100) + '"');
+              if (lowerText.indexOf(nameVariants[k]) !== -1) {
+                self._alertThrottled('name_in_chat', 'Your name mentioned in chat');
                 break;
               }
             }
@@ -1527,7 +1547,17 @@
       if (this.observer) { this.observer.disconnect(); this.observer = null; }
       if (this.chatObserver) { this.chatObserver.disconnect(); this.chatObserver = null; }
       this.active = false;
+      this.lastAlerts = {};
       console.log('[AirDraw] Meeting monitor stopped');
+    },
+
+    _alertThrottled: function (type, message) {
+      var now = Date.now();
+      if (this.lastAlerts[type] && (now - this.lastAlerts[type]) < this.ALERT_COOLDOWN) {
+        return; // throttled
+      }
+      this.lastAlerts[type] = now;
+      this._alert(type, message);
     },
 
     _alert: function (type, message) {
@@ -1597,9 +1627,7 @@
       console.log('[AirDraw] Ghost clips recorded, entering preview');
       postGhostStatus();
 
-      // Auto-accept after preview (or wait for user confirmation via GHOST_ACCEPT_PREVIEW)
-      // For now, start PiP preview so user can see
-      startPiP();
+      // PiP preview available via popup button (requires user gesture)
 
     } catch (e) {
       console.error('[AirDraw] Ghost recording failed:', e);
@@ -1635,8 +1663,7 @@
       // Pause AirDraw hand tracking while ghost is active
       if (enabled) stopTracking();
 
-      // Feature 1: Start PiP so user sees what others see
-      startPiP();
+      // PiP preview started via popup button (needs user gesture)
 
       // Feature 3: Start clip rotation if multiple clips
       if (ghostClips.length > 1) startClipRotation();
@@ -1845,6 +1872,9 @@
         if (event.data.payload && typeof event.data.payload.enabled === 'boolean') {
           ghostAutoMuteEnabled = event.data.payload.enabled;
         }
+        break;
+      case 'GHOST_REQUEST_PIP':
+        requestPiP();
         break;
       case 'SCREEN_MODE':
         if (drawMode === 'SCREEN') {
