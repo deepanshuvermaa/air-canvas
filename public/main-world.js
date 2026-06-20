@@ -55,12 +55,37 @@
 
   // ─── Pinch-to-click ───
   var lastClickTime = 0;
-  var CLICK_COOLDOWN = 500; // ms between clicks
+  var CLICK_COOLDOWN = 800; // ms between clicks (prevent rapid firing)
 
   // ─── Ghost Mode state ───
-  var ghostState = 'idle'; // idle | recording | ready | active
+  var ghostState = 'idle'; // idle | recording | previewing | ready | active
   var ghostActive = false;
   var ghostLoopPlayer = null; // will be initialized on first use
+
+  // ─── Ghost Mode: PiP preview ───
+  var pipWindow = null;
+  var pipVideo = null;
+
+  // ─── Ghost Mode: Multi-clip ───
+  var ghostClips = [];       // array of { blobUrl, durationMs, width, height }
+  var ghostCurrentClipIdx = 0;
+  var ghostClipSwitchTimer = null;
+
+  // ─── Ghost Mode: Auto-mute ───
+  var ghostSavedMuteState = false;
+  var ghostAutoMuteEnabled = true;
+
+  // ─── Ghost Mode: Auto-return timer ───
+  var ghostAutoReturnTimer = null;
+  var ghostAutoReturnDuration = 0; // ms, 0 = disabled
+
+  // ─── Ghost Mode: Name detection ───
+  var ghostNameDetector = null;
+  var ghostUserName = '';
+  var ghostSpeechRecognition = null;
+
+  // ─── Ghost Mode: Meeting monitor ───
+  var ghostMeetingMonitor = null;
 
   var settings = {
     strokeColor: '#FF3366',
@@ -681,7 +706,14 @@
       targetH = height;
     }
 
-    var rawX = landmarks[8].x * targetW;
+    // SCREEN mode: mirror x because webcam landmarks are mirrored relative to screen
+    // WEBCAM mode: no mirror because composite draws raw camera (already mirrored)
+    var rawX;
+    if (drawMode === 'SCREEN') {
+      rawX = (1 - landmarks[8].x) * targetW;
+    } else {
+      rawX = landmarks[8].x * targetW;
+    }
     var rawY = landmarks[8].y * targetH;
     var now = Date.now();
 
@@ -721,9 +753,13 @@
       if (gestureState === 'DRAWING' && candidate === 'HOVERING') threshold = 5;
       if (gestureState === 'DRAWING' && candidate === 'IDLE') threshold = 10;
       if (gestureState === 'DRAWING' && candidate === 'ERASING') threshold = 8;
-      if (gestureState === 'HOVERING' && candidate === 'DRAWING') threshold = 3;
-      if (candidate === 'CLICKING') threshold = 2; // fast pinch response
-      if (gestureState === 'CLICKING') threshold = 3; // need to hold pinch release
+      // KEY FIX: When coming FROM hovering (peace sign), require more frames
+      // to start drawing. This prevents the trailing index finger from
+      // accidentally starting a new stroke when you close peace sign.
+      if (gestureState === 'HOVERING' && candidate === 'DRAWING') threshold = 8;
+      if (gestureState === 'IDLE' && candidate === 'DRAWING') threshold = 4;
+      if (candidate === 'CLICKING') threshold = 4; // need clear pinch intent
+      if (gestureState === 'CLICKING') threshold = 5; // hold release longer
 
       if (gestureFrameCount >= threshold) {
         gestureState = candidate;
@@ -1101,11 +1137,420 @@
     }
   };
 
+  // ─── Feature 1: PiP Preview Window ───
+  // Shows users what meeting participants see in a floating always-on-top window
+
+  function startPiP() {
+    if (pipVideo) return; // already running
+    if (!compositeCanvas) return;
+
+    pipVideo = document.createElement('video');
+    pipVideo.srcObject = compositeCanvas.captureStream(15); // lower fps for preview
+    pipVideo.muted = true;
+    pipVideo.playsInline = true;
+    pipVideo.autoplay = true;
+    pipVideo.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+    document.documentElement.appendChild(pipVideo);
+
+    pipVideo.play().then(function () {
+      if (pipVideo && document.pictureInPictureEnabled) {
+        pipVideo.requestPictureInPicture().then(function (win) {
+          pipWindow = win;
+          pipWindow.onresize = function () {};
+          win.addEventListener('pauspictureinpicture', function () {
+            pipWindow = null;
+          });
+        }).catch(function (e) {
+          console.warn('[AirDraw] PiP not available:', e);
+        });
+      }
+    });
+  }
+
+  function stopPiP() {
+    if (document.pictureInPictureElement) {
+      document.exitPictureInPicture().catch(function () {});
+    }
+    if (pipVideo) {
+      pipVideo.srcObject = null;
+      pipVideo.remove();
+      pipVideo = null;
+    }
+    pipWindow = null;
+  }
+
+  // ─── Feature 3: Multi-clip Rotation ───
+  // Records multiple clips and rotates between them during ghost mode
+
+  var GhostMultiRecorder = {
+    clipCount: 3,
+    clipDurationMs: 8000,
+    currentRecording: 0,
+    clips: [],
+    onClipProgress: null,
+
+    recordAll: function (realVideo, onProgress, onClipDone) {
+      var self = this;
+      self.destroyAll();
+      self.clips = [];
+      self.currentRecording = 0;
+      self.onClipProgress = onProgress;
+
+      return self._recordNext(realVideo, onClipDone);
+    },
+
+    _recordNext: function (realVideo, onClipDone) {
+      var self = this;
+      if (self.currentRecording >= self.clipCount) {
+        return Promise.resolve(self.clips);
+      }
+
+      var clipNum = self.currentRecording + 1;
+      if (self.onClipProgress) self.onClipProgress(clipNum, self.clipCount, self.clipDurationMs / 1000);
+
+      return self._recordSingleClip(realVideo).then(function (clip) {
+        self.clips.push(clip);
+        if (onClipDone) onClipDone(clipNum, self.clipCount);
+        self.currentRecording++;
+        return self._recordNext(realVideo, onClipDone);
+      });
+    },
+
+    _recordSingleClip: function (realVideo) {
+      var self = this;
+      return new Promise(function (resolve, reject) {
+        var stream = realVideo.srcObject;
+        if (!stream) { reject(new Error('No srcObject')); return; }
+        var videoTracks = stream.getVideoTracks();
+        if (videoTracks.length === 0) { reject(new Error('No video tracks')); return; }
+
+        var ts = videoTracks[0].getSettings();
+        var w = ts.width || realVideo.videoWidth || 640;
+        var h = ts.height || realVideo.videoHeight || 480;
+        var videoOnlyStream = new MediaStream(videoTracks);
+
+        var mimeType = 'video/webm';
+        var candidates = ['video/webm; codecs=vp9', 'video/webm; codecs=vp8', 'video/webm'];
+        for (var i = 0; i < candidates.length; i++) {
+          if (MediaRecorder.isTypeSupported(candidates[i])) { mimeType = candidates[i]; break; }
+        }
+
+        var recorder;
+        try {
+          recorder = new MediaRecorder(videoOnlyStream, { mimeType: mimeType, videoBitsPerSecond: 1500000 });
+        } catch (e) {
+          recorder = new MediaRecorder(videoOnlyStream, { videoBitsPerSecond: 1500000 });
+        }
+
+        var chunks = [];
+        recorder.ondataavailable = function (e) { if (e.data.size > 0) chunks.push(e.data); };
+        recorder.onstop = function () {
+          var blob = new Blob(chunks, { type: mimeType });
+          var blobUrl = URL.createObjectURL(blob);
+          resolve({ blobUrl: blobUrl, durationMs: self.clipDurationMs, width: w, height: h });
+        };
+        recorder.onerror = function (e) { reject(e); };
+
+        recorder.start(500);
+        setTimeout(function () {
+          if (recorder.state === 'recording') recorder.stop();
+        }, self.clipDurationMs);
+      });
+    },
+
+    destroyAll: function () {
+      for (var i = 0; i < this.clips.length; i++) {
+        if (this.clips[i].blobUrl) URL.revokeObjectURL(this.clips[i].blobUrl);
+      }
+      this.clips = [];
+      this.currentRecording = 0;
+    }
+  };
+
+  // Modified ghostLoopPlayer to support multi-clip rotation
+  function switchToClip(clipIdx) {
+    if (!ghostClips[clipIdx]) return;
+    var clip = ghostClips[clipIdx];
+    ghostCurrentClipIdx = clipIdx;
+
+    if (ghostLoopPlayer.loopVideo) {
+      ghostLoopPlayer.loopVideo.pause();
+    }
+
+    ghostLoopPlayer.blobUrl = clip.blobUrl;
+    if (!ghostLoopPlayer.loopVideo) {
+      ghostLoopPlayer.loopVideo = document.createElement('video');
+      ghostLoopPlayer.loopVideo.muted = true;
+      ghostLoopPlayer.loopVideo.playsInline = true;
+      ghostLoopPlayer.loopVideo.style.display = 'none';
+    }
+    ghostLoopPlayer.loopVideo.src = clip.blobUrl;
+    ghostLoopPlayer.loopEndSec = clip.durationMs / 1000 - 0.25;
+    ghostLoopPlayer.loopStartSec = 0.25;
+    GhostArtifacts.loopDurationMs = (ghostLoopPlayer.loopEndSec - ghostLoopPlayer.loopStartSec) * 1000;
+
+    ghostLoopPlayer.loopVideo.currentTime = ghostLoopPlayer.loopStartSec;
+    ghostLoopPlayer.loopVideo.play().catch(function () {});
+    ghostLoopPlayer.ready = true;
+  }
+
+  function startClipRotation() {
+    if (ghostClips.length <= 1) return;
+    stopClipRotation();
+
+    ghostClipSwitchTimer = setInterval(function () {
+      if (!ghostActive || ghostClips.length <= 1) return;
+      // Switch at a random point near end of current loop, masked by artifact
+      var nextIdx = (ghostCurrentClipIdx + 1) % ghostClips.length;
+      // Sometimes skip to a random clip for less predictability
+      if (ghostClips.length > 2 && Math.random() < 0.3) {
+        nextIdx = Math.floor(Math.random() * ghostClips.length);
+        if (nextIdx === ghostCurrentClipIdx) nextIdx = (nextIdx + 1) % ghostClips.length;
+      }
+      // Inject a freeze burst to mask the switch
+      GhostArtifacts.inFreezeBurst = true;
+      GhostArtifacts.freezeFramesRemaining = 5 + Math.floor(Math.random() * 8);
+      switchToClip(nextIdx);
+    }, 15000 + Math.random() * 15000); // switch every 15-30s
+  }
+
+  function stopClipRotation() {
+    if (ghostClipSwitchTimer) {
+      clearInterval(ghostClipSwitchTimer);
+      ghostClipSwitchTimer = null;
+    }
+  }
+
+  // ─── Feature 5: Auto-mute mic during ghost ───
+
+  function autoMuteMic() {
+    if (!ghostAutoMuteEnabled || !realStream) return;
+    var audioTracks = realStream.getAudioTracks();
+    if (audioTracks.length > 0) {
+      ghostSavedMuteState = !audioTracks[0].enabled;
+      audioTracks[0].enabled = false; // mute
+      console.log('[AirDraw] Auto-muted mic for ghost mode');
+    }
+  }
+
+  function autoUnmuteMic() {
+    if (!ghostAutoMuteEnabled || !realStream) return;
+    var audioTracks = realStream.getAudioTracks();
+    if (audioTracks.length > 0) {
+      // Restore to state before ghost activation
+      audioTracks[0].enabled = !ghostSavedMuteState;
+      console.log('[AirDraw] Restored mic state');
+    }
+  }
+
+  // ─── Feature 7: Timer-based auto-return ───
+
+  function startGhostTimer(durationMs) {
+    clearGhostTimer();
+    if (durationMs <= 0) return;
+    ghostAutoReturnDuration = durationMs;
+
+    ghostAutoReturnTimer = setTimeout(function () {
+      if (ghostState === 'active') {
+        console.log('[AirDraw] Ghost auto-return timer expired');
+        toggleGhostMode(); // deactivate
+        // Notify user
+        window.postMessage({
+          source: 'airdraw-main',
+          type: 'GHOST_ALERT',
+          payload: { alert: 'timer_expired', message: 'Ghost mode auto-returned after timer expired' }
+        }, '*');
+      }
+    }, durationMs);
+
+    console.log('[AirDraw] Ghost timer set: ' + (durationMs / 1000) + 's');
+  }
+
+  function clearGhostTimer() {
+    if (ghostAutoReturnTimer) {
+      clearTimeout(ghostAutoReturnTimer);
+      ghostAutoReturnTimer = null;
+    }
+    ghostAutoReturnDuration = 0;
+  }
+
+  // ─── Feature 4: Name Detection via Web Speech API ───
+
+  function startNameDetection() {
+    if (!ghostUserName || ghostUserName.trim() === '') return;
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+      console.warn('[AirDraw] Speech recognition not available');
+      return;
+    }
+
+    var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    ghostSpeechRecognition = new SpeechRecognition();
+    ghostSpeechRecognition.continuous = true;
+    ghostSpeechRecognition.interimResults = true;
+    ghostSpeechRecognition.lang = 'en-US';
+
+    var nameVariants = ghostUserName.toLowerCase().split(',').map(function (n) { return n.trim(); });
+
+    ghostSpeechRecognition.onresult = function (event) {
+      for (var i = event.resultIndex; i < event.results.length; i++) {
+        var transcript = event.results[i][0].transcript.toLowerCase();
+        for (var j = 0; j < nameVariants.length; j++) {
+          if (transcript.indexOf(nameVariants[j]) !== -1) {
+            console.log('[AirDraw] NAME DETECTED in audio: "' + nameVariants[j] + '"');
+            window.postMessage({
+              source: 'airdraw-main',
+              type: 'GHOST_ALERT',
+              payload: {
+                alert: 'name_detected',
+                message: 'Someone said "' + nameVariants[j] + '"!',
+                transcript: transcript
+              }
+            }, '*');
+            break;
+          }
+        }
+      }
+    };
+
+    ghostSpeechRecognition.onerror = function (e) {
+      if (e.error !== 'no-speech' && e.error !== 'aborted') {
+        console.warn('[AirDraw] Speech recognition error:', e.error);
+      }
+    };
+
+    ghostSpeechRecognition.onend = function () {
+      // Auto-restart if ghost is still active
+      if (ghostActive && ghostSpeechRecognition) {
+        try { ghostSpeechRecognition.start(); } catch (e) {}
+      }
+    };
+
+    try {
+      ghostSpeechRecognition.start();
+      console.log('[AirDraw] Name detection started for:', nameVariants);
+    } catch (e) {
+      console.warn('[AirDraw] Could not start speech recognition:', e);
+    }
+  }
+
+  function stopNameDetection() {
+    if (ghostSpeechRecognition) {
+      try { ghostSpeechRecognition.stop(); } catch (e) {}
+      ghostSpeechRecognition = null;
+    }
+  }
+
+  // ─── Feature 6: Meeting Activity Monitor ───
+
+  var MeetingMonitor = {
+    observer: null,
+    chatObserver: null,
+    active: false,
+
+    start: function () {
+      if (this.active) return;
+      this.active = true;
+
+      // Monitor for screen share events (participant count changes, share buttons)
+      this.observer = new MutationObserver(function (mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+          var mutation = mutations[i];
+          // Detect screen share start (common across Meet/Teams/Zoom)
+          for (var j = 0; j < mutation.addedNodes.length; j++) {
+            var node = mutation.addedNodes[j];
+            if (node.nodeType !== 1) continue;
+            var text = (node.textContent || '').toLowerCase();
+
+            // Screen share detection
+            if (text.indexOf('presenting') !== -1 || text.indexOf('screen share') !== -1 || text.indexOf('sharing screen') !== -1) {
+              MeetingMonitor._alert('screen_share', 'Someone started screen sharing');
+            }
+
+            // Participant join/leave
+            if (text.indexOf('joined') !== -1 || text.indexOf('has joined') !== -1) {
+              MeetingMonitor._alert('participant_joined', 'Someone joined the meeting');
+            }
+            if (text.indexOf('left') !== -1 || text.indexOf('has left') !== -1) {
+              MeetingMonitor._alert('participant_left', 'Someone left the meeting');
+            }
+          }
+        }
+      });
+
+      this.observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+
+      // Monitor chat messages for user's name
+      this._startChatMonitor();
+
+      console.log('[AirDraw] Meeting monitor started');
+    },
+
+    _startChatMonitor: function () {
+      // Look for common chat containers across platforms
+      var chatSelectors = [
+        '[data-message-text]',        // Google Meet
+        '.message-body',              // Zoom
+        '.chat-message',              // Teams
+        '[role="log"]',               // Generic ARIA
+      ];
+
+      this.chatObserver = new MutationObserver(function (mutations) {
+        if (!ghostActive || !ghostUserName) return;
+        var nameVariants = ghostUserName.toLowerCase().split(',').map(function (n) { return n.trim(); });
+
+        for (var i = 0; i < mutations.length; i++) {
+          for (var j = 0; j < mutations[i].addedNodes.length; j++) {
+            var node = mutations[i].addedNodes[j];
+            if (node.nodeType !== 1) continue;
+            var text = (node.textContent || '').toLowerCase();
+            for (var k = 0; k < nameVariants.length; k++) {
+              if (text.indexOf(nameVariants[k]) !== -1) {
+                MeetingMonitor._alert('name_in_chat', 'Your name was mentioned in chat: "' + node.textContent.substring(0, 100) + '"');
+                break;
+              }
+            }
+          }
+        }
+      });
+
+      this.chatObserver.observe(document.body, {
+        childList: true,
+        subtree: true
+      });
+    },
+
+    stop: function () {
+      if (this.observer) { this.observer.disconnect(); this.observer = null; }
+      if (this.chatObserver) { this.chatObserver.disconnect(); this.chatObserver = null; }
+      this.active = false;
+      console.log('[AirDraw] Meeting monitor stopped');
+    },
+
+    _alert: function (type, message) {
+      console.log('[AirDraw] Meeting alert: ' + type + ' — ' + message);
+      window.postMessage({
+        source: 'airdraw-main',
+        type: 'GHOST_ALERT',
+        payload: { alert: type, message: message }
+      }, '*');
+    }
+  };
+
   function postGhostStatus() {
     window.postMessage({
       source: 'airdraw-main',
       type: 'GHOST_STATUS',
-      payload: { ghostState: ghostState }
+      payload: {
+        ghostState: ghostState,
+        clipCount: ghostClips.length,
+        autoMute: ghostAutoMuteEnabled,
+        autoReturnMs: ghostAutoReturnDuration,
+        userName: ghostUserName
+      }
     }, '*');
   }
 
@@ -1116,40 +1561,121 @@
     }
     // If ghost is active, deactivate first
     if (ghostActive) {
-      ghostActive = false;
+      toggleGhostMode();
     }
     ghostState = 'recording';
     postGhostStatus();
-    console.log('[AirDraw] Ghost recording started...');
+    console.log('[AirDraw] Ghost multi-clip recording started...');
 
     try {
-      await ghostLoopPlayer.prepare(videoElement, function (sec) {
-        console.log('[AirDraw] Ghost recording: ' + sec + 's remaining');
-      });
-      ghostState = 'ready';
-      console.log('[AirDraw] Ghost loop ready');
+      // Record 3 clips of 8 seconds each
+      var clips = await GhostMultiRecorder.recordAll(
+        videoElement,
+        function (clipNum, totalClips, durationSec) {
+          console.log('[AirDraw] Recording clip ' + clipNum + '/' + totalClips + ' (' + durationSec + 's)');
+          window.postMessage({
+            source: 'airdraw-main',
+            type: 'GHOST_RECORDING_PROGRESS',
+            payload: { clipNum: clipNum, totalClips: totalClips, durationSec: durationSec }
+          }, '*');
+        },
+        function (clipNum, totalClips) {
+          console.log('[AirDraw] Clip ' + clipNum + '/' + totalClips + ' done');
+        }
+      );
+
+      ghostClips = clips;
+      ghostCurrentClipIdx = 0;
+
+      // Load the first clip into the player
+      if (clips.length > 0) {
+        switchToClip(0);
+      }
+
+      // Move to preview state
+      ghostState = 'previewing';
+      console.log('[AirDraw] Ghost clips recorded, entering preview');
+      postGhostStatus();
+
+      // Auto-accept after preview (or wait for user confirmation via GHOST_ACCEPT_PREVIEW)
+      // For now, start PiP preview so user can see
+      startPiP();
+
     } catch (e) {
       console.error('[AirDraw] Ghost recording failed:', e);
       ghostState = 'idle';
+      postGhostStatus();
     }
+  }
+
+  function acceptGhostPreview() {
+    if (ghostState !== 'previewing') return;
+    ghostState = 'ready';
+    stopPiP();
+    console.log('[AirDraw] Ghost preview accepted, ready to activate');
+    postGhostStatus();
+  }
+
+  function rejectGhostPreview() {
+    if (ghostState !== 'previewing') return;
+    stopPiP();
+    GhostMultiRecorder.destroyAll();
+    ghostClips = [];
+    ghostState = 'idle';
+    console.log('[AirDraw] Ghost preview rejected, clips discarded');
     postGhostStatus();
   }
 
   function toggleGhostMode() {
     if (ghostState === 'ready') {
+      // ── ACTIVATE ghost ──
       ghostActive = true;
       ghostState = 'active';
+
       // Pause AirDraw hand tracking while ghost is active
       if (enabled) stopTracking();
-      console.log('[AirDraw] Ghost mode ACTIVATED');
+
+      // Feature 1: Start PiP so user sees what others see
+      startPiP();
+
+      // Feature 3: Start clip rotation if multiple clips
+      if (ghostClips.length > 1) startClipRotation();
+
+      // Feature 5: Auto-mute mic
+      autoMuteMic();
+
+      // Feature 4: Start name detection
+      startNameDetection();
+
+      // Feature 6: Start meeting monitor
+      MeetingMonitor.start();
+
+      // Feature 7: Start auto-return timer if set
+      if (ghostAutoReturnDuration > 0) {
+        startGhostTimer(ghostAutoReturnDuration);
+      }
+
+      console.log('[AirDraw] Ghost mode ACTIVATED (clips: ' + ghostClips.length + ')');
+
     } else if (ghostState === 'active') {
+      // ── DEACTIVATE ghost ──
       ghostActive = false;
       ghostState = 'ready';
+
+      // Stop all ghost sub-features
+      stopPiP();
+      stopClipRotation();
+      autoUnmuteMic();
+      stopNameDetection();
+      MeetingMonitor.stop();
+      clearGhostTimer();
+
       // Resume AirDraw tracking if it was enabled
       if (enabled && pipelineReady && compositeCanvas) {
         startHandTrackingIfNeeded(compositeCanvas.width, compositeCanvas.height);
       }
       console.log('[AirDraw] Ghost mode DEACTIVATED');
+
     } else {
       console.log('[AirDraw] Ghost toggle ignored — state is: ' + ghostState);
     }
@@ -1157,22 +1683,77 @@
   }
 
   // ─── Enable / Disable ───
+  // ─── Toast notifications ───
+  function showToast(title, subtitle) {
+    var existing = document.getElementById('airdraw-toast');
+    if (existing) existing.remove();
+
+    var toast = document.createElement('div');
+    toast.id = 'airdraw-toast';
+    toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:999999;' +
+      'padding:12px 24px;background:rgba(0,0,0,0.9);backdrop-filter:blur(8px);' +
+      'border:1px solid rgba(255,51,102,0.5);border-radius:12px;' +
+      'font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#fff;' +
+      'text-align:center;pointer-events:none;' +
+      'animation:airdraw-toast-in 0.3s ease;' +
+      'box-shadow:0 4px 20px rgba(0,0,0,0.5);';
+
+    var titleEl = document.createElement('div');
+    titleEl.style.cssText = 'font-size:14px;font-weight:700;margin-bottom:2px;';
+    titleEl.textContent = title;
+    toast.appendChild(titleEl);
+
+    if (subtitle) {
+      var subEl = document.createElement('div');
+      subEl.style.cssText = 'font-size:11px;color:#aaa;';
+      subEl.textContent = subtitle;
+      toast.appendChild(subEl);
+    }
+
+    // Inject animation keyframe if not already present
+    if (!document.getElementById('airdraw-toast-style')) {
+      var style = document.createElement('style');
+      style.id = 'airdraw-toast-style';
+      style.textContent = '@keyframes airdraw-toast-in{from{opacity:0;transform:translateX(-50%) translateY(20px);}to{opacity:1;transform:translateX(-50%) translateY(0);}}';
+      document.head.appendChild(style);
+    }
+
+    document.body.appendChild(toast);
+    setTimeout(function () {
+      if (toast.parentNode) {
+        toast.style.transition = 'opacity 0.3s';
+        toast.style.opacity = '0';
+        setTimeout(function () { toast.remove(); }, 300);
+      }
+    }, 2500);
+  }
+
   function enableAirDraw() {
     enabled = true;
     console.log('[AirDraw] Enabled');
     if (pipelineReady && compositeCanvas) {
       startHandTrackingIfNeeded(compositeCanvas.width, compositeCanvas.height);
     }
+    showToast('AirDraw Enabled', 'Point to draw | Peace sign to move | Palm to erase');
     postStatus();
   }
 
   function disableAirDraw() {
     enabled = false;
     stopTracking();
+    if (drawMode === 'SCREEN') {
+      drawMode = 'WEBCAM';
+      destroyScreenOverlay();
+      stopScreenRenderLoop();
+    }
     strokes = [];
     currentStroke = null;
     undoStack = [];
+    screenStrokes = [];
+    screenCurrentStroke = null;
+    screenUndoStack = [];
     console.log('[AirDraw] Disabled');
+    showToast('AirDraw Disabled', '');
     postStatus();
   }
 
@@ -1236,17 +1817,48 @@
       case 'GHOST_STATUS':
         postGhostStatus();
         break;
+      case 'GHOST_ACCEPT_PREVIEW':
+        acceptGhostPreview();
+        break;
+      case 'GHOST_REJECT_PREVIEW':
+        rejectGhostPreview();
+        break;
+      case 'GHOST_SET_TIMER':
+        if (event.data.payload && typeof event.data.payload.durationMs === 'number') {
+          ghostAutoReturnDuration = event.data.payload.durationMs;
+          if (ghostActive && ghostAutoReturnDuration > 0) {
+            startGhostTimer(ghostAutoReturnDuration);
+          }
+        }
+        break;
+      case 'GHOST_SET_NAME':
+        if (event.data.payload && typeof event.data.payload.name === 'string') {
+          ghostUserName = event.data.payload.name;
+          // Restart name detection if ghost is active
+          if (ghostActive) {
+            stopNameDetection();
+            startNameDetection();
+          }
+        }
+        break;
+      case 'GHOST_SET_AUTOMUTE':
+        if (event.data.payload && typeof event.data.payload.enabled === 'boolean') {
+          ghostAutoMuteEnabled = event.data.payload.enabled;
+        }
+        break;
       case 'SCREEN_MODE':
         if (drawMode === 'SCREEN') {
           drawMode = 'WEBCAM';
           destroyScreenOverlay();
           stopScreenRenderLoop();
           console.log('[AirDraw] Switched to WEBCAM mode');
+          showToast('Webcam Drawing Mode', 'Drawing on your video feed');
         } else {
           drawMode = 'SCREEN';
           createScreenOverlay();
           startScreenRenderLoop();
           console.log('[AirDraw] Switched to SCREEN mode');
+          showToast('Screen Annotation Mode', 'Drawing on shared screen. Pinch to click.');
         }
         window.postMessage({
           source: 'airdraw-main',

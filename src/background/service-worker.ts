@@ -54,6 +54,26 @@ chrome.runtime.onMessage.addListener(function (
     updateGhostBadge(tabId, message.ghostState);
   }
 
+  // Ghost alerts → send to popup (if open)
+  if (message.type === 'GHOST_ALERT') {
+    // Forward to all extension views (popup)
+    chrome.runtime.sendMessage({
+      type: 'GHOST_ALERT',
+      alert: message.alert,
+      message: message.message,
+    }).catch(function () {});
+  }
+
+  // Ghost recording progress → forward to popup
+  if (message.type === 'GHOST_RECORDING_PROGRESS') {
+    chrome.runtime.sendMessage({
+      type: 'GHOST_RECORDING_PROGRESS',
+      clipNum: message.clipNum,
+      totalClips: message.totalClips,
+      durationSec: message.durationSec,
+    }).catch(function () {});
+  }
+
   sendResponse({ received: true });
   return true;
 });
@@ -82,6 +102,9 @@ function updateGhostBadge(tabId: number, ghostState: string): void {
   } else if (ghostState === 'recording') {
     chrome.action.setBadgeText({ text: 'REC', tabId: tabId });
     chrome.action.setBadgeBackgroundColor({ color: '#EF4444', tabId: tabId });
+  } else if (ghostState === 'previewing') {
+    chrome.action.setBadgeText({ text: 'PRV', tabId: tabId });
+    chrome.action.setBadgeBackgroundColor({ color: '#F59E0B', tabId: tabId });
   } else if (ghostState === 'ready') {
     // Restore normal badge (AirDraw ON/OFF)
     const state = tabState.get(tabId);

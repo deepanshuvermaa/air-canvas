@@ -441,6 +441,79 @@ body {
   background: linear-gradient(135deg, #9D6FF8, #7C3AED);
 }
 
+.ghost-btn.accept-btn:hover {
+  border-color: #10B981;
+  color: #10B981;
+}
+
+.ghost-btn.reject-btn:hover {
+  border-color: #EF4444;
+  color: #EF4444;
+}
+
+.ghost-status-dot.previewing {
+  background: #F59E0B;
+  animation: airdraw-ghost-pulse 1s infinite;
+}
+
+.ghost-preview-actions {
+  margin-bottom: 12px;
+}
+
+.ghost-preview-actions .setting-desc {
+  margin-bottom: 8px;
+}
+
+/* Ghost text input */
+.ghost-text-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #2a2a3e;
+  border-radius: 6px;
+  background: #16213e;
+  color: #e0e0e0;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.ghost-text-input:focus {
+  border-color: #8B5CF6;
+}
+
+.ghost-text-input::placeholder {
+  color: #555;
+}
+
+/* Ghost select */
+.ghost-select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #2a2a3e;
+  border-radius: 6px;
+  background: #16213e;
+  color: #e0e0e0;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+}
+
+.ghost-select:focus {
+  border-color: #8B5CF6;
+}
+
+.ghost-timer-row {
+  margin-top: 4px;
+}
+
 /* ─── Shortcuts ─── */
 
 .shortcut-row {

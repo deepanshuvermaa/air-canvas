@@ -28,6 +28,12 @@ const ghostStatusDot = document.getElementById('ghost-status-dot') as HTMLSpanEl
 const ghostStatusTextEl = document.getElementById('ghost-status-text') as HTMLSpanElement;
 const ghostIntensityInput = document.getElementById('ghost-intensity') as HTMLInputElement;
 const ghostIntensityValue = document.getElementById('ghost-intensity-value') as HTMLSpanElement;
+const ghostPreviewActions = document.getElementById('ghost-preview-actions') as HTMLDivElement;
+const ghostAcceptBtn = document.getElementById('ghost-accept-btn') as HTMLButtonElement;
+const ghostRejectBtn = document.getElementById('ghost-reject-btn') as HTMLButtonElement;
+const ghostAutomuteInput = document.getElementById('ghost-automute') as HTMLInputElement;
+const ghostUsernameInput = document.getElementById('ghost-username') as HTMLInputElement;
+const ghostTimerSelect = document.getElementById('ghost-timer-select') as HTMLSelectElement;
 
 let currentEnabled = false;
 let currentGhostState = 'idle';
@@ -44,16 +50,28 @@ async function init(): Promise<void> {
   }
 
   // Load settings
-  const stored = await chrome.storage.local.get(['airdraw_settings', 'airdraw_enabled', 'ghost_intensity']);
+  const stored = await chrome.storage.local.get([
+    'airdraw_settings', 'airdraw_enabled',
+    'ghost_intensity', 'ghost_automute', 'ghost_username', 'ghost_timer'
+  ]);
   if (stored.airdraw_settings) {
     applySettingsToUI(stored.airdraw_settings as Record<string, unknown>);
   }
   updateStatus(stored.airdraw_enabled as boolean || false);
 
-  // Load ghost intensity preference
+  // Load ghost preferences
   if (stored.ghost_intensity !== undefined) {
     ghostIntensityInput.value = String(stored.ghost_intensity);
     ghostIntensityValue.textContent = stored.ghost_intensity + '%';
+  }
+  if (stored.ghost_automute !== undefined) {
+    ghostAutomuteInput.checked = stored.ghost_automute as boolean;
+  }
+  if (stored.ghost_username) {
+    ghostUsernameInput.value = stored.ghost_username as string;
+  }
+  if (stored.ghost_timer !== undefined) {
+    ghostTimerSelect.value = String(stored.ghost_timer);
   }
 }
 
@@ -167,20 +185,28 @@ shapeSnapInput.addEventListener('change', function () {
 
 // ─── Ghost Mode controls ───
 
-function updateGhostUI(state: string): void {
+function updateGhostUI(state: string, clipCount?: number): void {
   currentGhostState = state;
+  ghostPreviewActions.style.display = 'none';
 
   switch (state) {
     case 'recording':
       ghostStatusDot.className = 'ghost-status-dot recording';
-      ghostStatusTextEl.textContent = 'Recording...';
+      ghostStatusTextEl.textContent = 'Recording clips...';
       ghostRecordBtn.disabled = true;
       ghostRecordText.textContent = 'Recording...';
       ghostToggleBtn.disabled = true;
       break;
+    case 'previewing':
+      ghostStatusDot.className = 'ghost-status-dot previewing';
+      ghostStatusTextEl.textContent = 'Preview your clips';
+      ghostRecordBtn.disabled = true;
+      ghostToggleBtn.disabled = true;
+      ghostPreviewActions.style.display = 'block';
+      break;
     case 'ready':
       ghostStatusDot.className = 'ghost-status-dot ready';
-      ghostStatusTextEl.textContent = 'Loop ready (5s)';
+      ghostStatusTextEl.textContent = (clipCount || 3) + ' clips ready';
       ghostRecordBtn.disabled = false;
       ghostRecordText.textContent = 'Re-record';
       ghostToggleBtn.disabled = false;
@@ -189,18 +215,18 @@ function updateGhostUI(state: string): void {
       break;
     case 'active':
       ghostStatusDot.className = 'ghost-status-dot active';
-      ghostStatusTextEl.textContent = 'Ghost active';
+      ghostStatusTextEl.textContent = 'Ghost active (' + (clipCount || 3) + ' clips)';
       ghostRecordBtn.disabled = true;
-      ghostRecordText.textContent = 'Record Loop';
+      ghostRecordText.textContent = 'Record Clips';
       ghostToggleBtn.disabled = false;
       ghostToggleText.textContent = 'Go Live';
       ghostToggleBtn.classList.add('active');
       break;
     default: // idle
       ghostStatusDot.className = 'ghost-status-dot';
-      ghostStatusTextEl.textContent = 'No loop recorded';
+      ghostStatusTextEl.textContent = 'No clips recorded';
       ghostRecordBtn.disabled = false;
-      ghostRecordText.textContent = 'Record Loop';
+      ghostRecordText.textContent = 'Record Clips';
       ghostToggleBtn.disabled = true;
       ghostToggleText.textContent = 'Activate Ghost';
       ghostToggleBtn.classList.remove('active');
@@ -252,10 +278,85 @@ ghostIntensityInput.addEventListener('input', async function () {
   await chrome.storage.local.set({ ghost_intensity: val });
 });
 
+// ─── Preview accept/reject ───
+
+ghostAcceptBtn.addEventListener('click', async function () {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) {
+    chrome.tabs.sendMessage(tab.id, { type: 'GHOST_ACCEPT_PREVIEW' }).catch(function () {});
+    updateGhostUI('ready');
+  }
+});
+
+ghostRejectBtn.addEventListener('click', async function () {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) {
+    chrome.tabs.sendMessage(tab.id, { type: 'GHOST_REJECT_PREVIEW' }).catch(function () {});
+    updateGhostUI('idle');
+  }
+});
+
+// ─── Auto-mute toggle ───
+
+ghostAutomuteInput.addEventListener('change', async function () {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) {
+    chrome.tabs.sendMessage(tab.id, {
+      type: 'GHOST_SET_AUTOMUTE',
+      payload: { enabled: ghostAutomuteInput.checked }
+    }).catch(function () {});
+  }
+  await chrome.storage.local.set({ ghost_automute: ghostAutomuteInput.checked });
+});
+
+// ─── Name detection input ───
+
+let nameDebounce: ReturnType<typeof setTimeout> | null = null;
+ghostUsernameInput.addEventListener('input', function () {
+  if (nameDebounce) clearTimeout(nameDebounce);
+  nameDebounce = setTimeout(async function () {
+    const name = ghostUsernameInput.value.trim();
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      chrome.tabs.sendMessage(tab.id, {
+        type: 'GHOST_SET_NAME',
+        payload: { name: name }
+      }).catch(function () {});
+    }
+    await chrome.storage.local.set({ ghost_username: name });
+  }, 500);
+});
+
+// ─── Auto-return timer ───
+
+ghostTimerSelect.addEventListener('change', async function () {
+  const durationMs = Number(ghostTimerSelect.value);
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) {
+    chrome.tabs.sendMessage(tab.id, {
+      type: 'GHOST_SET_TIMER',
+      payload: { durationMs: durationMs }
+    }).catch(function () {});
+  }
+  await chrome.storage.local.set({ ghost_timer: durationMs });
+});
+
 // Listen for ghost status updates from content script
 chrome.runtime.onMessage.addListener(function (message: any) {
   if (message.type === 'GHOST_STATUS') {
-    updateGhostUI(message.ghostState);
+    updateGhostUI(message.ghostState, message.clipCount);
+  }
+  if (message.type === 'GHOST_RECORDING_PROGRESS') {
+    ghostStatusTextEl.textContent = 'Recording clip ' + message.clipNum + '/' + message.totalClips + '...';
+  }
+  if (message.type === 'GHOST_ALERT') {
+    // Flash the alert in the popup
+    ghostStatusTextEl.textContent = message.message;
+    ghostStatusTextEl.style.color = '#F59E0B';
+    setTimeout(function () {
+      ghostStatusTextEl.style.color = '';
+      updateGhostUI(currentGhostState);
+    }, 3000);
   }
 });
 

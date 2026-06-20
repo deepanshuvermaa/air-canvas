@@ -67,10 +67,11 @@ export interface GhostStatusMessage {
 // ─── Ghost Mode state machine ───
 
 export enum GhostState {
-  IDLE = 'IDLE',           // no loop recorded
-  RECORDING = 'RECORDING', // currently capturing loop clip
-  READY = 'READY',         // loop recorded, waiting for activation
-  ACTIVE = 'ACTIVE',       // ghost mode on, showing loop
+  IDLE = 'IDLE',             // no clips recorded
+  RECORDING = 'RECORDING',   // currently capturing clips
+  PREVIEWING = 'PREVIEWING', // clips recorded, user reviewing before accepting
+  READY = 'READY',           // clips accepted, waiting for activation
+  ACTIVE = 'ACTIVE',         // ghost mode on, showing loop with clip rotation
 }
 
 // ─── Settings schema ───
@@ -135,6 +136,11 @@ export enum GestureState {
 
 export interface WorldBridgeEvent {
   source: 'airdraw-isolated' | 'airdraw-main';
-  type: 'TOGGLE' | 'STATUS' | 'SETTINGS' | 'CLEAR' | 'UNDO' | 'RECORD_GHOST' | 'TOGGLE_GHOST' | 'GHOST_STATUS';
+  type: 'TOGGLE' | 'STATUS' | 'SETTINGS' | 'CLEAR' | 'UNDO'
+    | 'RECORD_GHOST' | 'TOGGLE_GHOST' | 'GHOST_STATUS'
+    | 'GHOST_ACCEPT_PREVIEW' | 'GHOST_REJECT_PREVIEW'
+    | 'GHOST_SET_TIMER' | 'GHOST_SET_NAME' | 'GHOST_SET_AUTOMUTE'
+    | 'GHOST_ALERT' | 'GHOST_RECORDING_PROGRESS'
+    | 'SCREEN_MODE' | 'MODE_STATUS';
   payload?: unknown;
 }

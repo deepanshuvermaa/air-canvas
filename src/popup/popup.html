@@ -150,19 +150,21 @@
         Ghost Mode
       </h3>
 
-      <p class="setting-desc ghost-desc">Record a loop of yourself, then swap your live feed for it. Audio stays live.</p>
+      <p class="setting-desc ghost-desc">Record 3 clips of yourself (8s each), then swap your live feed. Clips rotate automatically.</p>
 
+      <!-- Status -->
       <div class="ghost-status-row">
         <span class="ghost-status-dot" id="ghost-status-dot"></span>
-        <span class="ghost-status-text" id="ghost-status-text">No loop recorded</span>
+        <span class="ghost-status-text" id="ghost-status-text">No clips recorded</span>
       </div>
 
+      <!-- Main buttons -->
       <div class="ghost-buttons">
-        <button class="ghost-btn record-btn" id="ghost-record-btn" title="Record loop (Alt+R)">
+        <button class="ghost-btn record-btn" id="ghost-record-btn" title="Record clips (Alt+R)">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor">
             <circle cx="7" cy="7" r="5"/>
           </svg>
-          <span id="ghost-record-text">Record Loop</span>
+          <span id="ghost-record-text">Record Clips</span>
         </button>
         <button class="ghost-btn activate-btn" id="ghost-toggle-btn" title="Toggle Ghost (Alt+G)" disabled>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -172,11 +174,54 @@
         </button>
       </div>
 
+      <!-- Preview accept/reject (shown during previewing state) -->
+      <div class="ghost-preview-actions" id="ghost-preview-actions" style="display: none;">
+        <p class="setting-desc">Preview your recorded clips. Accept or re-record.</p>
+        <div class="ghost-buttons">
+          <button class="ghost-btn accept-btn" id="ghost-accept-btn">Accept</button>
+          <button class="ghost-btn reject-btn" id="ghost-reject-btn">Re-record</button>
+        </div>
+      </div>
+
+      <!-- Artifact Intensity -->
       <div class="setting-row" id="ghost-intensity-row">
         <label>Artifact Intensity</label>
         <div class="slider-row">
           <input type="range" id="ghost-intensity" min="0" max="100" value="50" step="5">
           <span class="slider-value" id="ghost-intensity-value">50%</span>
+        </div>
+      </div>
+
+      <!-- Auto-mute -->
+      <div class="setting-row toggle-row">
+        <div>
+          <label>Auto-mute Mic</label>
+          <p class="setting-desc">Mute your mic when ghost is active</p>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="ghost-automute" checked>
+          <span class="switch-slider"></span>
+        </label>
+      </div>
+
+      <!-- Name detection -->
+      <div class="setting-row">
+        <label>Your Name (for alerts)</label>
+        <input type="text" id="ghost-username" class="ghost-text-input" placeholder="e.g. John, Johnny" title="Comma-separated name variants">
+      </div>
+
+      <!-- Auto-return timer -->
+      <div class="setting-row">
+        <label>Auto-return Timer</label>
+        <div class="ghost-timer-row">
+          <select id="ghost-timer-select" class="ghost-select">
+            <option value="0">Disabled</option>
+            <option value="60000">1 minute</option>
+            <option value="120000">2 minutes</option>
+            <option value="300000" selected>5 minutes</option>
+            <option value="600000">10 minutes</option>
+            <option value="900000">15 minutes</option>
+          </select>
         </div>
       </div>
     </div>

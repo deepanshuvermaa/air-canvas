@@ -124,6 +124,10 @@ function updateGhostBadge(ghostState: string): void {
     statusBadge.classList.add('active');
     if (dot) dot.style.background = '#EF4444';
     if (label) label.textContent = 'Recording...';
+  } else if (ghostState === 'previewing') {
+    statusBadge.classList.add('active');
+    if (dot) dot.style.background = '#F59E0B';
+    if (label) label.textContent = 'Preview Loop';
   } else {
     // Restore to AirDraw state
     if (dot) dot.style.background = '#FF3366';
@@ -160,10 +164,74 @@ window.addEventListener('message', function (event) {
     chrome.runtime.sendMessage({
       type: 'GHOST_STATUS',
       ghostState: payload.ghostState,
+      clipCount: payload.clipCount,
+      autoMute: payload.autoMute,
+      autoReturnMs: payload.autoReturnMs,
+      userName: payload.userName,
+    }).catch(function () {});
+  }
+
+  // Ghost alerts (name detected, timer expired, meeting events)
+  if (msg.type === 'GHOST_ALERT') {
+    const payload = msg.payload;
+    // Show browser notification
+    if (chrome.runtime) {
+      chrome.runtime.sendMessage({
+        type: 'GHOST_ALERT',
+        alert: payload.alert,
+        message: payload.message,
+      }).catch(function () {});
+    }
+    // Also show an on-page notification overlay
+    showGhostAlert(payload.message);
+  }
+
+  // Recording progress
+  if (msg.type === 'GHOST_RECORDING_PROGRESS') {
+    const payload = msg.payload;
+    chrome.runtime.sendMessage({
+      type: 'GHOST_RECORDING_PROGRESS',
+      clipNum: payload.clipNum,
+      totalClips: payload.totalClips,
+      durationSec: payload.durationSec,
     }).catch(function () {});
   }
 
 });
+
+// ─── Ghost Alert Overlay ───
+function showGhostAlert(message: string): void {
+  const existing = document.getElementById('airdraw-ghost-alert');
+  if (existing) existing.remove();
+
+  const alert = document.createElement('div');
+  alert.id = 'airdraw-ghost-alert';
+  alert.innerHTML = `
+    <style>
+      #airdraw-ghost-alert {
+        position: fixed; top: 60px; right: 12px; z-index: 999999;
+        padding: 12px 18px;
+        background: rgba(139,92,246,0.95); backdrop-filter: blur(8px);
+        border: 1px solid rgba(255,255,255,0.2); border-radius: 12px;
+        font-family: -apple-system,BlinkMacSystemFont,sans-serif;
+        font-size: 14px; font-weight: 600; color: #fff;
+        box-shadow: 0 4px 20px rgba(139,92,246,0.5);
+        animation: airdraw-alert-in 0.3s ease, airdraw-alert-out 0.3s ease 4.7s forwards;
+        max-width: 320px;
+      }
+      @keyframes airdraw-alert-in { from { opacity:0; transform:translateX(50px); } to { opacity:1; transform:translateX(0); } }
+      @keyframes airdraw-alert-out { from { opacity:1; } to { opacity:0; transform:translateY(-10px); } }
+    </style>
+    <span>${message}</span>
+  `;
+
+  const attach = () => {
+    if (document.body) document.body.appendChild(alert);
+    setTimeout(() => { alert.remove(); }, 5000);
+  };
+  if (document.body) attach();
+  else document.addEventListener('DOMContentLoaded', attach);
+}
 
 // Messages FROM service worker (including landmarks from offscreen doc)
 chrome.runtime.onMessage.addListener(function (
@@ -180,6 +248,11 @@ chrome.runtime.onMessage.addListener(function (
     case 'RECORD_GHOST': sendToMain('RECORD_GHOST'); break;
     case 'TOGGLE_GHOST': sendToMain('TOGGLE_GHOST'); break;
     case 'GHOST_STATUS_REQUEST': sendToMain('GHOST_STATUS'); break;
+    case 'GHOST_ACCEPT_PREVIEW': sendToMain('GHOST_ACCEPT_PREVIEW'); break;
+    case 'GHOST_REJECT_PREVIEW': sendToMain('GHOST_REJECT_PREVIEW'); break;
+    case 'GHOST_SET_TIMER': sendToMain('GHOST_SET_TIMER', message.payload); break;
+    case 'GHOST_SET_NAME': sendToMain('GHOST_SET_NAME', message.payload); break;
+    case 'GHOST_SET_AUTOMUTE': sendToMain('GHOST_SET_AUTOMUTE', message.payload); break;
     case 'SCREEN_MODE': sendToMain('SCREEN_MODE'); break;
   }
   sendResponse({ received: true });
