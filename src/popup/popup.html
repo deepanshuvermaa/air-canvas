@@ -141,6 +141,63 @@
     <!-- Divider -->
     <div class="divider"></div>
 
+    <!-- Screen Annotation -->
+    <div class="section">
+      <h3 class="section-title">Screen Annotation</h3>
+      <button class="toggle-btn screen-mode-btn" id="screen-mode-btn" style="margin-bottom:8px;">
+        <span id="screen-mode-text">Enable Screen Drawing (Alt+S)</span>
+      </button>
+      <p class="setting-desc">Draw on your shared screen. Viewers see the ink live. Pinch thumb+index to click elements.</p>
+    </div>
+
+    <!-- Divider -->
+    <div class="divider"></div>
+
+    <!-- Gesture Guide -->
+    <div class="section">
+      <h3 class="section-title">Gesture Guide</h3>
+      <div class="gesture-guide">
+        <div class="gesture-item">
+          <span class="gesture-emoji">&#9758;</span>
+          <div>
+            <strong>Point (index only)</strong>
+            <p class="setting-desc">Pen down - draw ink</p>
+          </div>
+        </div>
+        <div class="gesture-item">
+          <span class="gesture-emoji">&#9996;</span>
+          <div>
+            <strong>Peace sign</strong>
+            <p class="setting-desc">Pen up - move without drawing</p>
+          </div>
+        </div>
+        <div class="gesture-item">
+          <span class="gesture-emoji">&#9994;</span>
+          <div>
+            <strong>Fist</strong>
+            <p class="setting-desc">Stop - hide cursor</p>
+          </div>
+        </div>
+        <div class="gesture-item">
+          <span class="gesture-emoji">&#128400;</span>
+          <div>
+            <strong>Open palm</strong>
+            <p class="setting-desc">Erase nearest stroke or clear all</p>
+          </div>
+        </div>
+        <div class="gesture-item">
+          <span class="gesture-emoji">&#129295;</span>
+          <div>
+            <strong>Pinch (screen mode)</strong>
+            <p class="setting-desc">Click elements on shared screen</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Divider -->
+    <div class="divider"></div>
+
     <!-- Ghost Mode -->
     <div class="section">
       <h3 class="section-title ghost-title">
@@ -253,6 +310,10 @@
         <kbd>Alt+G</kbd>
       </div>
       <div class="shortcut-row">
+        <span>Screen Annotation</span>
+        <kbd>Alt+S</kbd>
+      </div>
+      <div class="shortcut-row">
         <span>Point to draw</span>
         <kbd class="gesture">&#9758; Index finger</kbd>
       </div>
@@ -267,6 +328,6 @@
     </div>
   </div>
 
-  <script type="module" src="popup.ts"></script>
+  <script src="popup.js"></script>
 </body>
 </html>

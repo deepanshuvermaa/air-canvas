@@ -35,8 +35,12 @@ const ghostAutomuteInput = document.getElementById('ghost-automute') as HTMLInpu
 const ghostUsernameInput = document.getElementById('ghost-username') as HTMLInputElement;
 const ghostTimerSelect = document.getElementById('ghost-timer-select') as HTMLSelectElement;
 
+const screenModeBtn = document.getElementById('screen-mode-btn') as HTMLButtonElement;
+const screenModeText = document.getElementById('screen-mode-text') as HTMLSpanElement;
+
 let currentEnabled = false;
 let currentGhostState = 'idle';
+let currentScreenMode = false;
 
 async function init(): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -146,6 +150,28 @@ exportBtn.addEventListener('click', function () {
   exportBtn.textContent = 'Saved!';
   setTimeout(function () { exportBtn.textContent = 'Export'; }, 1500);
 });
+
+// ─── Screen mode toggle ───
+screenModeBtn.addEventListener('click', async function () {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      await chrome.tabs.sendMessage(tab.id, { type: 'SCREEN_MODE' });
+    }
+  } catch (e) { /* content script not loaded */ }
+  currentScreenMode = !currentScreenMode;
+  updateScreenModeUI(currentScreenMode);
+});
+
+function updateScreenModeUI(isScreen: boolean): void {
+  if (isScreen) {
+    screenModeText.textContent = 'Back to Webcam Mode (Alt+S)';
+    screenModeBtn.classList.add('active');
+  } else {
+    screenModeText.textContent = 'Enable Screen Drawing (Alt+S)';
+    screenModeBtn.classList.remove('active');
+  }
+}
 
 colorSwatches.forEach(function (swatch) {
   swatch.addEventListener('click', function () {

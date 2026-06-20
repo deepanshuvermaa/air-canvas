@@ -543,3 +543,49 @@ kbd.gesture {
   border-color: #2a2a3e;
   font-family: inherit;
 }
+
+/* ─── Screen mode button ─── */
+
+.screen-mode-btn {
+  font-size: 13px;
+  padding: 8px;
+}
+
+.screen-mode-btn.active {
+  background: linear-gradient(135deg, #3366FF, #2952CC);
+}
+
+/* ─── Gesture guide ─── */
+
+.gesture-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gesture-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  background: #16213e;
+  border-radius: 8px;
+  border: 1px solid #2a2a3e;
+}
+
+.gesture-emoji {
+  font-size: 20px;
+  min-width: 28px;
+  text-align: center;
+}
+
+.gesture-item strong {
+  font-size: 12px;
+  color: #e0e0e0;
+  display: block;
+}
+
+.gesture-item .setting-desc {
+  margin-top: 1px;
+  font-size: 10px;
+}
