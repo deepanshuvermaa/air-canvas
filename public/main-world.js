@@ -40,8 +40,12 @@
   var trackingFrameId = null;
   var compositeFrameId = null;
   var pipelineReady = false;
-  var drawingIdleTimer = null; // grace period before ending stroke
   var mediapipeBlobUrl = null;
+
+  // ─── Select/Move state ───
+  var selectedStrokeId = null;  // id of currently selected stroke
+  var selectDragStart = null;   // finger position when drag started
+  var lastDrawEndTime = 0;      // timestamp when last stroke ended (cooldown for erase)
   var mediapipeWasmPath = null;
   var mediapipeModelPath = null;
 
@@ -240,11 +244,20 @@
         if (alpha <= 0) continue;
       }
 
+      // Highlight selected stroke
+      var isSelected = (selectedStrokeId && stroke.id === selectedStrokeId);
+
       drawingCtx.globalAlpha = alpha;
-      drawingCtx.strokeStyle = stroke.color;
-      drawingCtx.lineWidth = stroke.width;
+      drawingCtx.strokeStyle = isSelected ? '#00DDFF' : stroke.color;
+      drawingCtx.lineWidth = isSelected ? stroke.width + 2 : stroke.width;
       drawingCtx.lineCap = 'round';
       drawingCtx.lineJoin = 'round';
+
+      // Draw selection glow
+      if (isSelected) {
+        drawingCtx.shadowColor = '#00DDFF';
+        drawingCtx.shadowBlur = 10;
+      }
 
       if (stroke.snappedShape) {
         renderShape(drawingCtx, stroke.snappedShape);
@@ -266,6 +279,10 @@
         }
         drawingCtx.stroke();
       }
+
+      // Reset shadow
+      drawingCtx.shadowColor = 'transparent';
+      drawingCtx.shadowBlur = 0;
     }
 
     drawingCtx.globalAlpha = 1;
@@ -302,6 +319,31 @@
         drawingCtx.lineTo(cursorPos.x, cursorPos.y + 4);
         drawingCtx.strokeStyle = 'rgba(255,255,255,0.6)';
         drawingCtx.lineWidth = 1;
+        drawingCtx.stroke();
+      } else if (gs === 'SELECTING') {
+        // Cyan move cursor = select/drag mode
+        drawingCtx.beginPath();
+        drawingCtx.arc(cursorPos.x, cursorPos.y, 14, 0, 2 * Math.PI);
+        drawingCtx.strokeStyle = selectedStrokeId ? 'rgba(0,221,255,0.9)' : 'rgba(0,221,255,0.5)';
+        drawingCtx.lineWidth = 2;
+        drawingCtx.stroke();
+        // Move arrows
+        var arrLen = 6;
+        drawingCtx.beginPath();
+        drawingCtx.strokeStyle = 'rgba(0,221,255,0.8)';
+        drawingCtx.lineWidth = 1.5;
+        // Up
+        drawingCtx.moveTo(cursorPos.x, cursorPos.y - 5);
+        drawingCtx.lineTo(cursorPos.x, cursorPos.y - 5 - arrLen);
+        // Down
+        drawingCtx.moveTo(cursorPos.x, cursorPos.y + 5);
+        drawingCtx.lineTo(cursorPos.x, cursorPos.y + 5 + arrLen);
+        // Left
+        drawingCtx.moveTo(cursorPos.x - 5, cursorPos.y);
+        drawingCtx.lineTo(cursorPos.x - 5 - arrLen, cursorPos.y);
+        // Right
+        drawingCtx.moveTo(cursorPos.x + 5, cursorPos.y);
+        drawingCtx.lineTo(cursorPos.x + 5 + arrLen, cursorPos.y);
         drawingCtx.stroke();
       } else if (gs === 'ERASING') {
         // Red X = eraser mode
@@ -755,7 +797,13 @@
     }
 
     // ─── Gesture classification ───
+    // ERASING:   all 4 fingers open (open palm)
+    // SELECTING: index + middle + ring open (3 fingers) = select/move/delete
+    // DRAWING:   index only = pen down
+    // HOVERING:  index + middle (peace) = pen up, reposition
+    // IDLE:      fist
     if (openCount >= 4) return transitionGesture('ERASING', fingerTip);
+    if (indexOpen && middleOpen && ringOpen && !pinkyOpen && openCount === 3) return transitionGesture('SELECTING', fingerTip);
     if (indexOpen && !middleOpen && openCount === 1) return transitionGesture('DRAWING', fingerTip);
     if (indexOpen && middleOpen && openCount === 2) return transitionGesture('HOVERING', fingerTip);
     if (openCount === 0) return transitionGesture('IDLE', fingerTip);
@@ -772,14 +820,18 @@
 
       if (gestureState === 'DRAWING' && candidate === 'HOVERING') threshold = 5;
       if (gestureState === 'DRAWING' && candidate === 'IDLE') threshold = 10;
-      if (gestureState === 'DRAWING' && candidate === 'ERASING') threshold = 8;
-      // KEY FIX: From HOVERING to DRAWING needs very high threshold.
-      // When you close peace sign, index finger stays up for 300-500ms.
-      // 12 frames = ~400ms which absorbs this transition cleanly.
+      // FIX: After drawing, hand naturally opens → triggers erase.
+      // 18 frames = ~600ms prevents accidental erase after drawing a shape.
+      if (gestureState === 'DRAWING' && candidate === 'ERASING') threshold = 18;
       if (gestureState === 'HOVERING' && candidate === 'DRAWING') threshold = 12;
       if (gestureState === 'IDLE' && candidate === 'DRAWING') threshold = 5;
-      if (candidate === 'CLICKING') threshold = 4; // need clear pinch intent
-      if (gestureState === 'CLICKING') threshold = 5; // hold release longer
+      if (candidate === 'CLICKING') threshold = 4;
+      if (gestureState === 'CLICKING') threshold = 5;
+      // SELECTING transitions
+      if (candidate === 'SELECTING') threshold = 5;
+      if (gestureState === 'SELECTING' && candidate !== 'SELECTING') threshold = 5;
+      // After recently finishing a stroke, block erase for 1 second
+      if (candidate === 'ERASING' && (Date.now() - lastDrawEndTime) < 1000) threshold = 30;
 
       if (gestureFrameCount >= threshold) {
         gestureState = candidate;
@@ -852,47 +904,141 @@
           currentStroke = null;
         }
       }
+      lastDrawEndTime = Date.now(); // cooldown for accidental erase
     }
 
-    // Pinch-to-click (screen mode only)
-    if (state === 'CLICKING' && fingerTip && previousGestureState !== 'CLICKING') {
+    // Pinch-to-click (screen mode only, not while selecting)
+    if (state === 'CLICKING' && fingerTip && previousGestureState !== 'CLICKING' && !selectedStrokeId) {
       dispatchClick(fingerTip.x, fingerTip.y);
     }
 
-    // Selective eraser
-    if (state === 'ERASING' && fingerTip && previousGestureState !== 'ERASING') {
+    // ─── SELECT / MOVE / DELETE ───
+    // 3 fingers (index+middle+ring) = select mode
+    if (state === 'SELECTING' && fingerTip) {
       var targetStrokes = (drawMode === 'SCREEN') ? screenStrokes : strokes;
-      var targetUndo = (drawMode === 'SCREEN') ? screenUndoStack : undoStack;
-      var eraserRadius = 40;
-      var remaining = [];
-      for (var i = 0; i < targetStrokes.length; i++) {
-        var strokeNear = false;
-        for (var j = 0; j < targetStrokes[i].points.length; j++) {
-          if (dist(targetStrokes[i].points[j], fingerTip) < eraserRadius) {
-            strokeNear = true;
-            break;
+
+      if (previousGestureState !== 'SELECTING') {
+        // Just entered select mode — find nearest stroke
+        var nearestId = null;
+        var nearestDist = Infinity;
+        for (var i = 0; i < targetStrokes.length; i++) {
+          for (var j = 0; j < targetStrokes[i].points.length; j++) {
+            var d = dist(targetStrokes[i].points[j], fingerTip);
+            if (d < nearestDist) {
+              nearestDist = d;
+              nearestId = targetStrokes[i].id;
+            }
+          }
+          // Also check snapped shape center
+          if (targetStrokes[i].snappedShape) {
+            var sh = targetStrokes[i].snappedShape;
+            var shCenter;
+            if (sh.type === 'circle') shCenter = sh.center;
+            else if (sh.type === 'rectangle') shCenter = { x: sh.topLeft.x + sh.width / 2, y: sh.topLeft.y + sh.height / 2 };
+            else if (sh.type === 'line' || sh.type === 'arrow') shCenter = { x: (sh.start.x + sh.end.x) / 2, y: (sh.start.y + sh.end.y) / 2 };
+            if (shCenter) {
+              var dc = dist(shCenter, fingerTip);
+              if (dc < nearestDist) { nearestDist = dc; nearestId = targetStrokes[i].id; }
+            }
           }
         }
-        if (strokeNear) {
+        if (nearestDist < 80) {
+          selectedStrokeId = nearestId;
+          selectDragStart = { x: fingerTip.x, y: fingerTip.y };
+        } else {
+          selectedStrokeId = null;
+          selectDragStart = null;
+        }
+      } else if (selectedStrokeId && selectDragStart) {
+        // Dragging — move the selected stroke
+        var dx = fingerTip.x - selectDragStart.x;
+        var dy = fingerTip.y - selectDragStart.y;
+        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+          for (var i = 0; i < targetStrokes.length; i++) {
+            if (targetStrokes[i].id === selectedStrokeId) {
+              // Move all points
+              for (var j = 0; j < targetStrokes[i].points.length; j++) {
+                targetStrokes[i].points[j].x += dx;
+                targetStrokes[i].points[j].y += dy;
+              }
+              // Move snapped shape
+              if (targetStrokes[i].snappedShape) {
+                var sh = targetStrokes[i].snappedShape;
+                if (sh.type === 'circle') { sh.center.x += dx; sh.center.y += dy; }
+                else if (sh.type === 'rectangle') { sh.topLeft.x += dx; sh.topLeft.y += dy; }
+                else if (sh.type === 'line' || sh.type === 'arrow') {
+                  sh.start.x += dx; sh.start.y += dy;
+                  sh.end.x += dx; sh.end.y += dy;
+                }
+              }
+              break;
+            }
+          }
+          selectDragStart = { x: fingerTip.x, y: fingerTip.y };
+        }
+      }
+    }
+
+    // Pinch while selecting = delete selected stroke
+    if (state === 'CLICKING' && selectedStrokeId && previousGestureState === 'SELECTING') {
+      var targetStrokes = (drawMode === 'SCREEN') ? screenStrokes : strokes;
+      var targetUndo = (drawMode === 'SCREEN') ? screenUndoStack : undoStack;
+      for (var i = 0; i < targetStrokes.length; i++) {
+        if (targetStrokes[i].id === selectedStrokeId) {
           targetUndo.push(targetStrokes[i]);
-        } else {
-          remaining.push(targetStrokes[i]);
+          targetStrokes.splice(i, 1);
+          break;
         }
       }
-      if (remaining.length < targetStrokes.length) {
-        if (drawMode === 'SCREEN') { screenStrokes = remaining; }
-        else { strokes = remaining; }
+      selectedStrokeId = null;
+      selectDragStart = null;
+    }
+
+    // Deselect when leaving select mode (not to clicking)
+    if (previousGestureState === 'SELECTING' && state !== 'SELECTING' && state !== 'CLICKING') {
+      selectedStrokeId = null;
+      selectDragStart = null;
+    }
+
+    // Selective eraser — with post-draw cooldown protection
+    if (state === 'ERASING' && fingerTip && previousGestureState !== 'ERASING') {
+      // Skip erase if we just finished drawing (hand opens naturally)
+      if ((Date.now() - lastDrawEndTime) < 1000) {
+        // Do nothing — cooldown active
       } else {
-        if (drawMode === 'SCREEN') {
-          screenUndoStack = screenUndoStack.concat(screenStrokes);
-          screenStrokes = [];
-        } else {
-          undoStack = undoStack.concat(strokes);
-          strokes = [];
+        var targetStrokes = (drawMode === 'SCREEN') ? screenStrokes : strokes;
+        var targetUndo = (drawMode === 'SCREEN') ? screenUndoStack : undoStack;
+        var eraserRadius = 50;
+        var remaining = [];
+        for (var i = 0; i < targetStrokes.length; i++) {
+          var strokeNear = false;
+          for (var j = 0; j < targetStrokes[i].points.length; j++) {
+            if (dist(targetStrokes[i].points[j], fingerTip) < eraserRadius) {
+              strokeNear = true;
+              break;
+            }
+          }
+          if (strokeNear) {
+            targetUndo.push(targetStrokes[i]);
+          } else {
+            remaining.push(targetStrokes[i]);
+          }
         }
+        if (remaining.length < targetStrokes.length) {
+          if (drawMode === 'SCREEN') { screenStrokes = remaining; }
+          else { strokes = remaining; }
+        } else {
+          if (drawMode === 'SCREEN') {
+            screenUndoStack = screenUndoStack.concat(screenStrokes);
+            screenStrokes = [];
+          } else {
+            undoStack = undoStack.concat(strokes);
+            strokes = [];
+          }
+        }
+        if (drawMode === 'SCREEN') { screenCurrentStroke = null; }
+        else { currentStroke = null; }
       }
-      if (drawMode === 'SCREEN') { screenCurrentStroke = null; }
-      else { currentStroke = null; }
     }
 
     previousGestureState = state;
